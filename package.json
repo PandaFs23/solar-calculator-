@@ -1,0 +1,24 @@
+{
+  "name": "solar-calculator-local",
+  "version": "1.0.0",
+  "description": "Local Node.js solar sizing calculator server",
+  "main": "server.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "api": "node server.js"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "lucide-react": "^0.462.0",
+    "recharts": "^2.13.3"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11",
+    "@vitejs/plugin-react": "^4.3.4"
+  },
+  "author": "",
+  "license": "MIT"
+}
