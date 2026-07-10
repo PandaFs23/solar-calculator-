@@ -12,7 +12,7 @@ import { PANEL_PRODUCTS, INVERTER_PRODUCTS, BATTERY_PRODUCTS } from "../data/pro
 import { APPLIANCES } from "../data/appliances.js";
 import { SYS_CONFIGS } from "../data/configs.js";
 import { computeResidential } from "../lib/solarMath.js";
-import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours } from "../lib/geo.js";
+import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility } from "../lib/geo.js";
 import AerialView from "../components/AerialView.jsx";
 import Toggle from "../components/Toggle.jsx";
 import Field from "../components/Field.jsx";
@@ -194,26 +194,8 @@ export default function ResidentialCalculator() {
 
       // rough state + utility territory guess from coordinates
       let guessed = "";
-      const guess = (id, label) => { pickUtilityKeepSun(id, psh); guessed = ` · looks like ${label} territory`; };
-      if (lo >= -125 && lo < -114.1 && la >= 32.4 && la <= 42.1) {
-        // California
-        if (la < 33.6 && lo > -118) guess("sdge", "SDG&E");
-        else if (la >= 38.3 && la <= 38.9 && lo >= -121.7 && lo <= -121.0) guess("smud", "SMUD");
-        else if (la < 35.0) guess("sce", "SCE");
-        else guess("pge", "PG&E");
-      } else if (lo >= -114.9 && lo <= -109.0 && la >= 31.3 && la <= 37.0) {
-        // Arizona
-        if (la < 32.6 && lo > -111.5) guess("tep", "TEP");
-        else guess("aps", "APS / SRP");
-      } else if (lo >= -109.1 && lo <= -102.0 && la >= 36.9 && la <= 41.1) {
-        // Colorado
-        if (la >= 38.6 && la <= 39.1 && lo >= -105.1 && lo <= -104.5) guess("csu", "Colorado Springs Utilities");
-        else guess("xcel", "Xcel Energy");
-      } else if (stateName && STATE_CODES[stateName]) {
-        // anywhere else in the USA: geocoder tells us the state; default to its major utility
-        const first = UTILITIES.find((u) => u.st === STATE_CODES[stateName]);
-        if (first) guess(first.id, `${stateName} — defaulted to ${first.name}, confirm below`);
-      }
+      const g = guessUtility(la, lo, stateName);
+      if (g) { pickUtilityKeepSun(g.id, psh); guessed = ` · looks like ${g.label} territory`; }
 
       setGeoState("done");
       setGeoMsg(`${shortName} — measured ${psh.toFixed(1)} peak sun hrs/day (${yr} data)${guessed}`);

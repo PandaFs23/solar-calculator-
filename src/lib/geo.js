@@ -1,6 +1,7 @@
 // Geoapify geocoding + Open-Meteo solar irradiance fetchers.
 // Keys come from .env.local (VITE_GEOAPIFY_KEY / VITE_GEOAPIFY_AUTOCOMPLETE_KEY) —
 // see .env.example. Open-Meteo needs no key.
+import { UTILITIES, STATE_CODES } from "../data/utilities.js";
 
 export async function fetchAddressSuggestions(text) {
   const key = import.meta.env.VITE_GEOAPIFY_AUTOCOMPLETE_KEY;
@@ -35,4 +36,32 @@ export async function fetchPeakSunHours(la, lo) {
   const annualKwhM2 = days.reduce((s, v) => s + v, 0) / 3.6; // MJ→kWh
   const psh = Math.min(7, Math.max(3, annualKwhM2 / days.length));
   return { psh, yr };
+}
+
+// rough state + utility territory guess from coordinates; returns
+// { id, label } for the status line or null when there's no basis to guess
+export function guessUtility(la, lo, stateName) {
+  if (lo >= -125 && lo < -114.1 && la >= 32.4 && la <= 42.1) {
+    // California
+    if (la < 33.6 && lo > -118) return { id: "sdge", label: "SDG&E" };
+    if (la >= 38.3 && la <= 38.9 && lo >= -121.7 && lo <= -121.0) return { id: "smud", label: "SMUD" };
+    if (la < 35.0) return { id: "sce", label: "SCE" };
+    return { id: "pge", label: "PG&E" };
+  }
+  if (lo >= -114.9 && lo <= -109.0 && la >= 31.3 && la <= 37.0) {
+    // Arizona
+    if (la < 32.6 && lo > -111.5) return { id: "tep", label: "TEP" };
+    return { id: "aps", label: "APS / SRP" };
+  }
+  if (lo >= -109.1 && lo <= -102.0 && la >= 36.9 && la <= 41.1) {
+    // Colorado
+    if (la >= 38.6 && la <= 39.1 && lo >= -105.1 && lo <= -104.5) return { id: "csu", label: "Colorado Springs Utilities" };
+    return { id: "xcel", label: "Xcel Energy" };
+  }
+  if (stateName && STATE_CODES[stateName]) {
+    // anywhere else in the USA: geocoder tells us the state; default to its major utility
+    const first = UTILITIES.find((u) => u.st === STATE_CODES[stateName]);
+    if (first) return { id: first.id, label: `${stateName} — defaulted to ${first.name}, confirm below` };
+  }
+  return null;
 }
