@@ -1,1 +1,133 @@
-Hello! My name is nick and I wanted to create this solar app tool for anyone to use and get a free way to look at starting to design their own solar system. I never saw a tool online without them selling data to installers and adverts to get to set up a system with so must haste. I work in the solar indstury as a service technican so i see a lot of misteps and horrible mistakes along the way. Please let me know if anything fails and or you're having trouble with the system in anyway. I will be happy to get it fixed 
+# Solar Sizing Calculator
+
+Hello! My name is Nick and I wanted to create this solar app tool for anyone to use and get a free way to look at starting to design their own solar system. I never saw a tool online without them selling data to installers and adverts to get to set up a system with so much haste. I work in the solar industry as a service technician so I see a lot of missteps and horrible mistakes along the way. Please let me know if anything fails and or you're having trouble with the system in any way — I will be happy to get it fixed.
+
+---
+
+A professional-grade residential solar sizing tool. Upload a utility bill to auto-fill, or enter usage manually. Calculates panel count, system cost, payback period, and 25-year savings — factoring in existing solar, batteries, and future loads like EVs.
+
+**Live app:** [pandafs23.github.io/solar-calculator-](https://pandafs23.github.io/solar-calculator-/)
+
+---
+
+## Getting Started
+
+### Prerequisites
+- [Node.js](https://nodejs.org/) v18 or higher
+- npm v9 or higher
+
+### Install
+```bash
+git clone https://github.com/PandaFs23/solar-calculator-.git
+cd solar-calculator-
+npm install
+```
+
+### Run locally
+
+**Frontend (React + Vite):**
+```bash
+npm run dev
+# Opens at http://localhost:5173
+```
+
+**API server (optional — for local testing of the calculation engine):**
+```bash
+npm run api
+# Runs at http://localhost:3001
+```
+
+**Lint:**
+```bash
+# First install ESLint (one-time):
+npm install --save-dev eslint @eslint/js globals eslint-plugin-react eslint-plugin-react-hooks
+
+npm run lint
+```
+
+---
+
+## Architecture
+
+```
+solar-calculator-/
+├── src/
+│   ├── data/                  ← Data catalogs — easy to update without touching UI
+│   │   ├── constants.js       ← Colors, seasonal factors, calc constants (tax credit, cost/watt, etc.)
+│   │   ├── utilities.js       ← 100+ US utilities, rate schedules, getSchedules()
+│   │   ├── products.js        ← Solar panels, inverters, battery products
+│   │   ├── appliances.js      ← Household load defaults (watts + annual kWh)
+│   │   └── configs.js         ← System configuration presets (whole-home, partial, TOU, backup-only)
+│   ├── SolarCalculator.jsx    ← Main React component (~1350 lines)
+│   ├── main.jsx               ← App entry point
+│   └── index.css              ← Global styles
+├── server.js                  ← Local Node.js API server (port 3001)
+├── solar-calculator.js        ← Standalone CLI calculator
+└── .github/workflows/
+    └── deploy.yml             ← Auto-deploy to GitHub Pages on every push to main
+```
+
+### Key Features
+- **Bill scanner** — AI reads a PDF utility bill (Anthropic Claude) and auto-fills utility, usage, rate, and any existing solar/battery from a NEM statement
+- **Address lookup** — Nominatim geocoding + Open-Meteo solar irradiance data for real measured peak sun hours at the exact property
+- **Satellite roof view** — Esri World Imagery aerial map centered on the located address
+- **Product catalog** — Real panel, inverter, and battery specs (see `src/data/products.js`)
+- **25-year savings model** — Includes utility rate escalation (4%/yr), panel degradation (0.5%/yr), and battery arbitrage economics
+- **Print / PDF report** — `window.print()` produces a clean customer-ready report
+
+---
+
+## Updating Data
+
+All product and utility data lives in `src/data/` — no need to touch the component:
+
+| File | What to update |
+|---|---|
+| `src/data/utilities.js` | Add or edit utilities, rate schedules |
+| `src/data/products.js` | Add new panels, inverters, or batteries |
+| `src/data/constants.js` | Adjust tax credit %, cost per watt, export rate, default constants |
+| `src/data/appliances.js` | Add or adjust household load defaults |
+| `src/data/configs.js` | Edit system configuration preset descriptions |
+
+---
+
+## API Reference
+
+The local server (`npm run api`) exposes:
+
+### `POST /calculate`
+Calculate a solar system sizing from JSON input.
+
+**Example request body:**
+```json
+{
+  "utilityId": "sdge",
+  "inputMode": "kwh",
+  "annualKwh": 8400,
+  "panelProdId": "q_cells_q_home_next_l_g3_420_435_w",
+  "invProdId": "enphase_iq8m",
+  "battMode": "new",
+  "battProdId": "pw3",
+  "battUnits": 1
+}
+```
+
+Run a sample calculation from the command line:
+```bash
+node solar-calculator.js sample
+```
+
+### `GET /health`
+Returns `{ "status": "ok" }`.
+
+---
+
+## Deployment
+
+Pushing to `main` automatically builds and deploys to GitHub Pages via `.github/workflows/deploy.yml`. No manual steps needed.
+
+---
+
+## License
+
+MIT

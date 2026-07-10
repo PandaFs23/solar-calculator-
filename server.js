@@ -2,7 +2,7 @@ const http = require('http');
 const { URL } = require('url');
 const { calculateSolarSizing } = require('./solar-calculator');
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 function sendJson(res, statusCode, payload) {
   const json = JSON.stringify(payload, null, 2);
