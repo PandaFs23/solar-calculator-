@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from "react";
-import { Sun, Zap, DollarSign, Percent, TrendingUp, PlusCircle, BatteryCharging, FileUp, Loader2, CheckCircle2, XCircle, MapPin, Plug, ShieldCheck, Printer } from "lucide-react";
+import { Sun, Zap, DollarSign, Percent, TrendingUp, PlusCircle, BatteryCharging, Loader2, MapPin, Plug, ShieldCheck, Printer } from "lucide-react";
 import {
   ComposedChart, Bar, Line, Area, AreaChart, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, ReferenceLine,
@@ -41,11 +41,6 @@ export default function SolarCalculator() {
   // battery
   const [battMode, setBattMode] = useState("none"); // 'none' | 'existing' | 'new'
   const [battKwh, setBattKwh] = useState(13.5);
-
-  // PDF ingestion
-  const [scanState, setScanState] = useState("idle"); // idle | loading | done | error
-  const [scanMsg, setScanMsg] = useState("");
-  const fileRef = useRef(null);
 
   // report
   const [customerName, setCustomerName] = useState("");
@@ -250,120 +245,6 @@ export default function SolarCalculator() {
   };
 
 
-  const handlePdf = async (file) => {
-    if (!file) return;
-    setScanState("loading");
-    setScanMsg("Reading the bill…");
-    try {
-      const base64 = await new Promise((res, rej) => {
-        const rd = new FileReader();
-        rd.onload = () => res(rd.result.split(",")[1]);
-        rd.onerror = () => rej(new Error("Could not read file"));
-        rd.readAsDataURL(file);
-      });
-
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(import.meta.env.VITE_ANTHROPIC_API_KEY
-            ? { "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }
-            : {}),
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: [
-              { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
-              {
-                type: "text",
-                text: `This is a residential utility bill (likely SDG&E or PG&E). Extract these values and respond with ONLY a JSON object, no markdown, no backticks, no other text:
-{
-  "utility": "SDG&E" | "PG&E" | "SCE" | "SMUD" | "LADWP" | "APS" | "SRP" | "TEP" | "Xcel" | "Colorado Springs Utilities" | "Black Hills" | "Other" | null,
-  "monthly_bill_total": number | null,       // total amount due in dollars
-  "monthly_kwh": number | null,              // kWh used this billing period
-  "annual_kwh": number | null,               // 12-month usage if shown (usage history chart/table)
-  "avg_rate": number | null,                 // $/kWh if derivable (total charges / kWh)
-  "existing_solar_kw": number | null,        // solar system size if mentioned (NEM statement)
-  "existing_solar_annual_kwh": number | null,// annual solar generation if shown
-  "battery_kwh": number | null               // battery capacity if mentioned
-}
-Use null for anything not found. Numbers only, no units or symbols.`
-              },
-            ],
-          }],
-        }),
-      });
-
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => ({}));
-        if (response.status === 401) {
-          setScanState("error");
-          setScanMsg("Bill scanning is not configured yet — enter your details manually above. (API key needed)");
-        } else if (response.status === 403) {
-          setScanState("error");
-          setScanMsg("Bill scanning blocked — direct browser access requires the anthropic-dangerous-direct-browser-access header. A proxy server is needed to use this feature.");
-        } else {
-          setScanState("error");
-          setScanMsg(`AI service error (${response.status}): ${errBody?.error?.message || "Enter your details manually."}`);
-        }
-        return;
-      }
-
-      const data = await response.json();
-      const text = data.content
-        .filter((b) => b.type === "text")
-        .map((b) => b.text)
-        .join("\n");
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-
-      const applied = [];
-      const utilMap = { "SDG&E": "sdge", "PG&E": "pge", "SCE": "sce", "SMUD": "smud", "LADWP": "ladwp", "APS": "aps", "SRP": "srp", "TEP": "tep", "Xcel": "xcel", "Colorado Springs Utilities": "csu", "Black Hills": "bhe" };
-      if (parsed.utility && utilMap[parsed.utility]) { pickUtility(utilMap[parsed.utility]); applied.push(`utility: ${parsed.utility}`); }
-      if (parsed.avg_rate && parsed.avg_rate > 0.05 && parsed.avg_rate < 1) { setRate(parsed.avg_rate); setScheduleId("customrate"); applied.push(`rate $${parsed.avg_rate.toFixed(2)}/kWh (custom)`); }
-      if (parsed.annual_kwh && parsed.annual_kwh > 500) {
-        setAnnualKwh(Math.round(parsed.annual_kwh)); setInputMode("kwh");
-        applied.push(`${Math.round(parsed.annual_kwh).toLocaleString()} kWh/yr`);
-      } else if (parsed.monthly_kwh && parsed.monthly_kwh > 50) {
-        setAnnualKwh(Math.round(parsed.monthly_kwh * 12)); setInputMode("kwh");
-        applied.push(`${Math.round(parsed.monthly_kwh)} kWh/mo → annualized`);
-      } else if (parsed.monthly_bill_total && parsed.monthly_bill_total > 10) {
-        setBill(Math.round(parsed.monthly_bill_total)); setInputMode("bill");
-        applied.push(`bill $${Math.round(parsed.monthly_bill_total)}`);
-      }
-      if (parsed.existing_solar_kw && parsed.existing_solar_kw > 0) {
-        setHasExisting(true); setExistKw(parsed.existing_solar_kw);
-        applied.push(`existing solar ${parsed.existing_solar_kw} kW`);
-      }
-      if (parsed.existing_solar_annual_kwh && parsed.existing_solar_annual_kwh > 0) {
-        setHasExisting(true); setExistProdOverride(Math.round(parsed.existing_solar_annual_kwh));
-        applied.push(`solar production ${Math.round(parsed.existing_solar_annual_kwh).toLocaleString()} kWh/yr`);
-      }
-      if (parsed.battery_kwh && parsed.battery_kwh > 0) {
-        setBattMode("existing"); setBattKwh(parsed.battery_kwh);
-        applied.push(`battery ${parsed.battery_kwh} kWh`);
-      }
-
-      if (applied.length) {
-        setScanState("done");
-        setScanMsg(`Pulled from bill: ${applied.join(" · ")}`);
-      } else {
-        setScanState("error");
-        setScanMsg("Couldn't find usable numbers in that PDF — enter them manually or try a clearer bill.");
-      }
-    } catch (err) {
-      console.warn("Bill scanner failed:", err);
-      setScanState("error");
-      if (err?.message?.includes("fetch") || err?.message?.includes("network") || err?.message?.includes("CORS")) {
-        setScanMsg("Bill scanning is not configured for this deployment — enter your details manually above.");
-      } else {
-        setScanMsg("Something went wrong reading the PDF — enter the numbers manually above.");
-      }
-    }
-  };
-
   const r = useMemo(() => {
     const safeRate = Math.max(rate, 0.01);
 
@@ -517,7 +398,7 @@ Use null for anything not found. Numbers only, no units or symbols.`
           From utility bill to rooftop array
         </h1>
         <p style={{ color: C.dim, maxWidth: 620, margin: "0 0 20px", fontSize: 15, lineHeight: 1.6 }}>
-          Upload the customer's bill to auto-fill, or enter everything manually. Existing solar and batteries are factored in so the new system covers only what's left.
+          Enter your utility and usage details below. Existing solar and batteries are factored in so the new system covers only what's left.
         </p>
 
         {/* save report bar */}
@@ -534,37 +415,6 @@ Use null for anything not found. Numbers only, no units or symbols.`
             <Printer size={16} /> Save PDF report
           </button>
           <span className="mono" style={{ fontSize: 11, color: C.dim }}>Opens the print dialog — choose "Save as PDF"</span>
-        </div>
-
-        {/* ---- PDF upload ---- */}
-        <div style={{
-          marginBottom: 28, padding: "16px 18px", borderRadius: 12,
-          border: `1.5px dashed ${scanState === "done" ? C.green : scanState === "error" ? C.copper : C.line}`,
-          background: C.slate, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
-        }}>
-          <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }}
-            onChange={(e) => handlePdf(e.target.files?.[0])} />
-          <button onClick={() => fileRef.current?.click()} disabled={scanState === "loading"}
-            style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "10px 18px", borderRadius: 8,
-              background: C.goldSoft, border: `1px solid ${C.gold}`, color: C.gold,
-              fontFamily: "inherit", fontSize: 14, fontWeight: 500, cursor: scanState === "loading" ? "wait" : "pointer",
-            }}>
-            {scanState === "loading" ? <Loader2 size={16} className="spin" /> : <FileUp size={16} />}
-            {scanState === "loading" ? "Scanning bill…" : "Upload utility bill (PDF)"}
-          </button>
-          <div style={{ flex: 1, minWidth: 220, fontSize: 13, color: C.dim, lineHeight: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
-            {scanState === "done" && <CheckCircle2 size={16} color={C.green} style={{ flexShrink: 0 }} />}
-            {scanState === "error" && <XCircle size={16} color={C.copper} style={{ flexShrink: 0 }} />}
-            <span style={{ color: scanState === "done" ? C.green : scanState === "error" ? C.copper : C.dim }}>
-              {scanMsg || "AI reads the bill and pulls utility, usage, rate — plus existing solar production and battery if they're on a NEM statement. Review what it fills in before quoting."}
-            </span>
-            {!scanMsg && (
-              <span style={{ display: "block", marginTop: 6, fontSize: 11, color: C.dim, opacity: 0.7 }}>
-                🔒 Your bill PDF is processed by Anthropic AI and is not stored by this app.
-              </span>
-            )}
-          </div>
         </div>
 
         <div style={{ display: "grid", gap: 24 }}>
