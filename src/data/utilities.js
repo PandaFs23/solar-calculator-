@@ -241,7 +241,20 @@ export const RATE_SCHEDULES = {
   bhe: [{ id: "r", name: "Residential Service", rate: 0.15, note: "Standard schedule" }],
 };
 
-export const getSchedules = (u) => {
+export const getSchedules = (u, commercial = false) => {
+  if (commercial) {
+    // Generic commercial schedules per utility — ESTIMATES only. Commercial
+    // energy rates typically run ~20–30% below residential; the demand charge
+    // ($/kW/month, typical $10–25) is billed separately and is editable in
+    // the calculator. Always verify against the utility's actual tariff.
+    const r = (f) => Math.round(u.rate * f * 100) / 100;
+    return [
+      { id: "gs_small", name: "General Service (Small, <100 kW) — est.", rate: r(0.80), demandRate: 10, note: "Estimated small-commercial energy rate (~20% below residential); light demand charge" },
+      { id: "gs_demand", name: "General Service Demand (TOU) — est.", rate: r(0.72), demandRate: 16, note: "Estimated TOU energy rate with a separate demand charge — where batteries earn their keep" },
+      { id: "gs_large", name: "Large General Service — est.", rate: r(0.68), demandRate: 22, note: "Estimated large-commercial rate; lower energy price, heavier demand component" },
+      { id: "customrate", name: "Custom rate…", rate: null, demandRate: null, note: "Set the energy and demand rates directly below" },
+    ];
+  }
   const known = RATE_SCHEDULES[u.id];
   const base = known || [
     { id: "std", name: "Standard residential (state-avg est.)", rate: u.rate, note: "State-average ballpark — verify against the actual tariff" },
