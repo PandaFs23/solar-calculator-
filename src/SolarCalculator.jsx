@@ -436,7 +436,7 @@ export default function SolarCalculator() {
   const [customerName, setCustomerName] = useState("");
 
   // address lookup
-  const [address, setAddress] = useState("524 Trevithin Avenue");
+  const [address, setAddress] = useState("");
   const [geoState, setGeoState] = useState("idle"); // idle | loading | done | error
   const [geoMsg, setGeoMsg] = useState("");
   const [suggestions, setSuggestions] = useState([]);
