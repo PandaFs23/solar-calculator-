@@ -146,16 +146,16 @@ export default function SolarCalculator() {
     setAddress(v);
     if (sugTimer.current) clearTimeout(sugTimer.current);
     if (v.trim().length < 4) { setSuggestions([]); return; }
-    // debounced single search (respects Nominatim's no-heavy-autocomplete policy)
     sugTimer.current = setTimeout(async () => {
       try {
+        const key = import.meta.env.VITE_GEOAPIFY_AUTOCOMPLETE_KEY;
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=us&addressdetails=1&q=${encodeURIComponent(v)}`
+          `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(v)}&filter=countrycode:us&limit=5&format=json&apiKey=${key}`
         ).then((x) => x.json());
-        setSuggestions((res || []).map((g) => ({
-          label: g.display_name.split(",").slice(0, 4).join(","),
-          lat: parseFloat(g.lat), lon: parseFloat(g.lon),
-          state: g.address?.state || null,
+        setSuggestions((res?.results || []).map((g) => ({
+          label: g.formatted,
+          lat: g.lat, lon: g.lon,
+          state: g.state || null,
         })));
       } catch (err) { console.warn("Address suggestion fetch failed:", err); setSuggestions([]); }
     }, 700);
@@ -173,12 +173,13 @@ export default function SolarCalculator() {
     setGeoState("loading");
     setGeoMsg("Locating address…");
     try {
+      const key = import.meta.env.VITE_GEOAPIFY_KEY;
       const geo = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&addressdetails=1&q=${encodeURIComponent(address)}`
+        `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(address)}&filter=countrycode:us&limit=1&format=json&apiKey=${key}`
       ).then((x) => x.json());
-      if (!geo?.length) throw new Error("not found");
-      const { lat, lon, display_name } = geo[0];
-      await fetchSolarFor(parseFloat(lat), parseFloat(lon), display_name.split(",").slice(0, 3).join(","), geo[0].address?.state || null);
+      if (!geo?.results?.length) throw new Error("not found");
+      const { lat, lon, formatted, state } = geo.results[0];
+      await fetchSolarFor(lat, lon, formatted, state || null);
     } catch (err) {
       console.warn("Address lookup failed:", err);
       setGeoState("error");

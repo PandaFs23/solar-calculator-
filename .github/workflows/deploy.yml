@@ -34,6 +34,9 @@ jobs:
 
       - name: Build production assets
         run: npm run build
+        env:
+          VITE_GEOAPIFY_KEY: ${{ secrets.VITE_GEOAPIFY_KEY }}
+          VITE_GEOAPIFY_AUTOCOMPLETE_KEY: ${{ secrets.VITE_GEOAPIFY_AUTOCOMPLETE_KEY }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
