@@ -68,12 +68,35 @@ solar-calculator-/
 ```
 
 ### Key Features
-- **Bill scanner** — AI reads a PDF utility bill (Anthropic Claude) and auto-fills utility, usage, rate, and any existing solar/battery from a NEM statement
+- **Bill scanner** — AI reads a PDF utility bill (Anthropic Claude) and auto-fills utility, usage, rate, and any existing solar/battery from a NEM statement *(requires API key — see [Enabling Bill Scanning](#enabling-bill-scanning) below)*
 - **Address lookup** — Nominatim geocoding + Open-Meteo solar irradiance data for real measured peak sun hours at the exact property
 - **Satellite roof view** — Esri World Imagery aerial map centered on the located address
 - **Product catalog** — Real panel, inverter, and battery specs (see `src/data/products.js`)
 - **25-year savings model** — Includes utility rate escalation (4%/yr), panel degradation (0.5%/yr), and battery arbitrage economics
 - **Print / PDF report** — `window.print()` produces a clean customer-ready report
+
+---
+
+## Enabling Bill Scanning
+
+The PDF bill upload uses Anthropic's Claude AI. It is **off by default** — the rest of the app works fully without it.
+
+To enable it locally:
+
+1. Get an API key from [console.anthropic.com](https://console.anthropic.com)
+2. Copy `.env.example` to `.env.local`:
+   ```bash
+   cp .env.example .env.local
+   ```
+3. Paste your key into `.env.local`:
+   ```
+   VITE_ANTHROPIC_API_KEY=sk-ant-...
+   ```
+4. Run `npm run dev` — bill scanning will now work
+
+> **Privacy note:** When bill scanning is enabled, the uploaded PDF is sent to Anthropic's API for processing. The app itself stores nothing — no user data is saved anywhere.
+
+> **Production note:** For a deployed site, a backend proxy is the more secure approach (keeps the key off the client). The included `server.js` can be extended for this purpose.
 
 ---
 
@@ -125,6 +148,17 @@ Returns `{ "status": "ok" }`.
 ## Deployment
 
 Pushing to `main` automatically builds and deploys to GitHub Pages via `.github/workflows/deploy.yml`. No manual steps needed.
+
+---
+
+## Third-Party Services
+
+| Service | Used for | Key required | Notes |
+|---|---|---|---|
+| [Anthropic Claude](https://anthropic.com) | PDF bill scanning | Yes (optional) | See [Enabling Bill Scanning](#enabling-bill-scanning). Not used unless key is configured. |
+| [Nominatim / OpenStreetMap](https://nominatim.org) | Address geocoding | No | Free public API. Browser automatically sends the page URL as a `Referer` header, which identifies the app per Nominatim's usage policy. |
+| [Open-Meteo](https://open-meteo.com) | Historical solar irradiance | No | Free, generous limits, no key needed. |
+| [Esri World Imagery](https://www.esri.com) | Satellite roof view | No | Public tile endpoint. Attribution shown in the map view ("Imagery © Esri World Imagery") as required. |
 
 ---
 

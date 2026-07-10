@@ -264,7 +264,12 @@ export default function SolarCalculator() {
 
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(import.meta.env.VITE_ANTHROPIC_API_KEY
+            ? { "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }
+            : {}),
+        },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
           max_tokens: 1000,
@@ -291,6 +296,21 @@ Use null for anything not found. Numbers only, no units or symbols.`
           }],
         }),
       });
+
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        if (response.status === 401) {
+          setScanState("error");
+          setScanMsg("Bill scanning is not configured yet — enter your details manually above. (API key needed)");
+        } else if (response.status === 403) {
+          setScanState("error");
+          setScanMsg("Bill scanning blocked — direct browser access requires the anthropic-dangerous-direct-browser-access header. A proxy server is needed to use this feature.");
+        } else {
+          setScanState("error");
+          setScanMsg(`AI service error (${response.status}): ${errBody?.error?.message || "Enter your details manually."}`);
+        }
+        return;
+      }
 
       const data = await response.json();
       const text = data.content
@@ -334,8 +354,13 @@ Use null for anything not found. Numbers only, no units or symbols.`
         setScanMsg("Couldn't find usable numbers in that PDF — enter them manually or try a clearer bill.");
       }
     } catch (err) {
+      console.warn("Bill scanner failed:", err);
       setScanState("error");
-      setScanMsg("Something went wrong reading the PDF. Enter the numbers manually.");
+      if (err?.message?.includes("fetch") || err?.message?.includes("network") || err?.message?.includes("CORS")) {
+        setScanMsg("Bill scanning is not configured for this deployment — enter your details manually above.");
+      } else {
+        setScanMsg("Something went wrong reading the PDF — enter the numbers manually above.");
+      }
     }
   };
 
@@ -534,6 +559,11 @@ Use null for anything not found. Numbers only, no units or symbols.`
             <span style={{ color: scanState === "done" ? C.green : scanState === "error" ? C.copper : C.dim }}>
               {scanMsg || "AI reads the bill and pulls utility, usage, rate — plus existing solar production and battery if they're on a NEM statement. Review what it fills in before quoting."}
             </span>
+            {!scanMsg && (
+              <span style={{ display: "block", marginTop: 6, fontSize: 11, color: C.dim, opacity: 0.7 }}>
+                🔒 Your bill PDF is processed by Anthropic AI and is not stored by this app.
+              </span>
+            )}
           </div>
         </div>
 
