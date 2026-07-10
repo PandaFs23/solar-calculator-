@@ -6,13 +6,23 @@ import {
 } from "recharts";
 
 
-import { C, MONTHS, SEASON, DAYS, USE_SEASON, SCALE_TOTAL, DERATE, COST_PER_WATT, TAX_CREDIT, PANEL_SQFT, RATE_ESCALATION, DEGRADATION, EXPORT_RATE, BATT_EFF, BATT_UTIL, SOLAR_HOUR_SHARE, BATT_COST_KWH, BATT_KW_PER_KWH, EV_MI_PER_KWH } from "./data/constants.js";
-import { STATES, STATE_CODES, UTILITIES, INVERTERS, RATE_SCHEDULES, getSchedules } from "./data/utilities.js";
-import { PANEL_PRODUCTS, INVERTER_PRODUCTS, BATTERY_PRODUCTS } from "./data/products.js";
-import { APPLIANCES } from "./data/appliances.js";
-import { SYS_CONFIGS } from "./data/configs.js";
+import { C, TAX_CREDIT, RATE_ESCALATION, EXPORT_RATE, BATT_EFF, EV_MI_PER_KWH } from "../data/constants.js";
+import { STATES, STATE_CODES, UTILITIES, INVERTERS, getSchedules } from "../data/utilities.js";
+import { PANEL_PRODUCTS, INVERTER_PRODUCTS, BATTERY_PRODUCTS } from "../data/products.js";
+import { APPLIANCES } from "../data/appliances.js";
+import { SYS_CONFIGS } from "../data/configs.js";
+import { computeResidential } from "../lib/solarMath.js";
+import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours } from "../lib/geo.js";
+import AerialView from "../components/AerialView.jsx";
+import Toggle from "../components/Toggle.jsx";
+import Field from "../components/Field.jsx";
+import MiniInput from "../components/MiniInput.jsx";
+import NumInput from "../components/NumInput.jsx";
+import Slider from "../components/Slider.jsx";
+import Stat from "../components/Stat.jsx";
+import Section from "../components/Section.jsx";
 
-export default function SolarCalculator() {
+export default function ResidentialCalculator() {
   const [stateSel, setStateSel] = useState("CA");
   const [utilityId, setUtilityId] = useState("sdge");
   const [scheduleId, setScheduleId] = useState("toudr1");
@@ -148,15 +158,7 @@ export default function SolarCalculator() {
     if (v.trim().length < 4) { setSuggestions([]); return; }
     sugTimer.current = setTimeout(async () => {
       try {
-        const key = import.meta.env.VITE_GEOAPIFY_AUTOCOMPLETE_KEY;
-        const res = await fetch(
-          `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(v)}&filter=countrycode:us&limit=5&format=json&apiKey=${key}`
-        ).then((x) => x.json());
-        setSuggestions((res?.results || []).map((g) => ({
-          label: g.formatted,
-          lat: g.lat, lon: g.lon,
-          state: g.state || null,
-        })));
+        setSuggestions(await fetchAddressSuggestions(v));
       } catch (err) { console.warn("Address suggestion fetch failed:", err); setSuggestions([]); }
     }, 700);
   };
@@ -173,13 +175,8 @@ export default function SolarCalculator() {
     setGeoState("loading");
     setGeoMsg("Locating address…");
     try {
-      const key = import.meta.env.VITE_GEOAPIFY_KEY;
-      const geo = await fetch(
-        `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(address)}&filter=countrycode:us&limit=1&format=json&apiKey=${key}`
-      ).then((x) => x.json());
-      if (!geo?.results?.length) throw new Error("not found");
-      const { lat, lon, formatted, state } = geo.results[0];
-      await fetchSolarFor(lat, lon, formatted, state || null);
+      const { lat, lon, formatted, state } = await geocodeAddress(address);
+      await fetchSolarFor(lat, lon, formatted, state);
     } catch (err) {
       console.warn("Address lookup failed:", err);
       setGeoState("error");
@@ -192,15 +189,7 @@ export default function SolarCalculator() {
     setGeoState("loading");
     setGeoMsg("Pulling a year of solar data for this location…");
     try {
-      // last full calendar year of daily solar radiation (MJ/m²)
-      const yr = new Date().getFullYear() - 1;
-      const met = await fetch(
-        `https://archive-api.open-meteo.com/v1/archive?latitude=${la}&longitude=${lo}&start_date=${yr}-01-01&end_date=${yr}-12-31&daily=shortwave_radiation_sum&timezone=auto`
-      ).then((x) => x.json());
-      const days = met?.daily?.shortwave_radiation_sum?.filter((v) => v != null) || [];
-      if (!days.length) throw new Error("no solar data");
-      const annualKwhM2 = days.reduce((s, v) => s + v, 0) / 3.6; // MJ→kWh
-      const psh = Math.min(7, Math.max(3, annualKwhM2 / days.length));
+      const { psh, yr } = await fetchPeakSunHours(la, lo);
       setSunHrs(Math.round(psh * 10) / 10);
 
       // rough state + utility territory guess from coordinates
@@ -246,114 +235,13 @@ export default function SolarCalculator() {
   };
 
 
-  const r = useMemo(() => {
-    const safeRate = Math.max(rate, 0.01);
-
-    // household loads (respecting custom value overrides)
-    const loadKwh = (a) => getKwhYr(a);
-    let loadsNow = 0, loadsFuture = 0;
-    APPLIANCES.forEach((a) => {
-      const s = loads[a.id]?.status;
-      if (s === "now") loadsNow += loadKwh(a);
-      if (s === "future") loadsFuture += loadKwh(a);
-    });
-
-    // current usage from the chosen source
-    const baseUsage =
-      inputMode === "loads" ? Math.max(loadsNow, 500)
-      : inputMode === "kwh" ? annualKwh
-      : (bill / safeRate) * 12;
-    const annualUsage = baseUsage;
-    // size the system for current usage PLUS planned future loads
-    const sizingUsage = annualUsage + loadsFuture;
-    const monthlyKwh = annualUsage / 12;
-    const estMonthlyBill = monthlyKwh * safeRate;
-
-    // existing solar
-    let existProd = 0;
-    if (hasExisting) {
-      const eff = inverter.derate * Math.pow(1 - DEGRADATION, existAge);
-      existProd = existProdOverride ?? existKw * sunHrs * eff * 365;
-    }
-    const existOffsetPct = (existProd / sizingUsage) * 100;
-    const existPanels = hasExisting ? Math.round((existKw * 1000) / panelW) : 0;
-
-    // new system covers the remainder (incl. future loads)
-    const remainingKwh = Math.max(sizingUsage - existProd, 0);
-    const autoKw = (remainingKwh / 365) / (sunHrs * invProd.derate);
-    const autoPanels = Math.ceil((autoKw * 1000) / panelW);
-    const nPanels = panels ?? autoPanels;
-    const actualKw = (nPanels * panelW) / 1000;
-    const newProd = actualKw * sunHrs * invProd.derate * 365;
-    const newOffsetPct = (newProd / sizingUsage) * 100;
-    const combinedProd = existProd + newProd;
-    const offsetPct = (combinedProd / sizingUsage) * 100;
-
-    // battery: new = units × selected product; existing = entered kWh
-    const hasBatt = battMode !== "none";
-    const battKwhEff = battMode === "new" ? battUnits * battProd.unitKwh : battKwh;
-    const daytimeSurplus = Math.max(combinedProd - sizingUsage * SOLAR_HOUR_SHARE, 0);
-    const shiftable = hasBatt ? Math.min(battKwhEff * 365 * BATT_UTIL, daytimeSurplus) : 0;
-    const battSavings = shiftable * BATT_EFF * Math.max(safeRate - EXPORT_RATE, 0);
-    const avgLoadKw = sizingUsage / 8760;
-    const backupHours = hasBatt && avgLoadKw > 0 ? battKwhEff / avgLoadKw : 0;
-    const battCost = battMode === "new" ? battUnits * battProd.price : 0;
-
-    // backup load statement: which selected loads the battery carries in an outage
-    const backupLoads = APPLIANCES.filter((a) => {
-      const l = loads[a.id];
-      return l && l.status !== "no" && l.backup;
-    }).map((a) => ({ ...a, watts: getWatts(a), annual: loadKwh(a) }));
-    const backupWatts = backupLoads.reduce((s, a) => s + a.watts, 0);
-    const backupDailyKwh = backupLoads.reduce((s, a) => s + a.annual, 0) / 365;
-    const invKw = battMode === "new" ? battUnits * battProd.unitKw : battKwhEff * BATT_KW_PER_KWH;
-    const backupOk = backupWatts / 1000 <= invKw;
-    const backupHrsCritical = hasBatt && backupDailyKwh > 0 ? (battKwhEff * 0.9) / backupDailyKwh * 24 : 0;
-
-    // costs & savings (new equipment only)
-    const grossCost = actualKw * 1000 * COST_PER_WATT + battCost;
-    const netCost = grossCost * (1 - TAX_CREDIT);
-    const billedBefore = Math.max(sizingUsage - existProd, 0);
-    const billedAfter = Math.max(sizingUsage - combinedProd, 0);
-    const solarSavings = (billedBefore - billedAfter) * safeRate;
-    const newBattSavings = battMode === "new" ? battSavings : 0; // only count toward payback if buying it
-    const annualSavings = solarSavings + newBattSavings;
-    const payback = annualSavings > 0 && netCost > 0 ? netCost / annualSavings : 0;
-    const roofArea = nPanels * PANEL_SQFT;
-
-    const monthly = MONTHS.map((m, i) => {
-      const scale = (DAYS[i] * SEASON[i]) / SCALE_TOTAL;
-      return {
-        month: m,
-        existing: Math.round(existProd * scale),
-        newSolar: Math.round(newProd * scale),
-        usage: Math.round((sizingUsage / 12) * USE_SEASON[i]),
-      };
-    });
-
-    let cum = 0;
-    const savings = [];
-    for (let y = 0; y <= 25; y++) {
-      if (y > 0) {
-        const yearRate = safeRate * Math.pow(1 + RATE_ESCALATION, y - 1);
-        const deg = Math.pow(1 - DEGRADATION, y - 1);
-        const before = Math.max(sizingUsage - existProd * deg, 0);
-        const after = Math.max(sizingUsage - combinedProd * deg, 0);
-        const battY = newBattSavings * Math.pow(1 + RATE_ESCALATION, y - 1);
-        cum += (before - after) * yearRate + battY;
-      }
-      savings.push({ year: y, saved: Math.round(cum), cost: Math.round(netCost) });
-    }
-
-    return {
-      monthlyKwh, annualUsage, sizingUsage, loadsNow, loadsFuture, estMonthlyBill,
-      nPanels, autoPanels, actualKw,
-      existProd, existOffsetPct, existPanels, newProd, newOffsetPct, offsetPct,
-      battSavings, backupHours, battCost, shiftable, battKwhEff,
-      backupLoads, backupWatts, backupDailyKwh, invKw, backupOk, backupHrsCritical,
-      grossCost, netCost, annualSavings, payback, roofArea, monthly, savings, savings25: cum,
-    };
-  }, [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, existKw, existType, existAge, existProdOverride, inverter, battMode, battKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits]);
+  const r = useMemo(() => computeResidential({
+    rate, inputMode, annualKwh, bill,
+    loads, loadVals, evMiles,
+    hasExisting, existKw, existAge, existProdOverride, inverter,
+    sunHrs, panels, panelW, invProd,
+    battMode, battUnits, battProd, battKwh,
+  }), [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, existKw, existType, existAge, existProdOverride, inverter, battMode, battKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits]);
 
   const fmt = (n, d = 0) =>
     n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -1093,144 +981,3 @@ export default function SolarCalculator() {
   );
 }
 
-function Section({ on, setOn, color, fill, icon, title, children }) {
-  return (
-    <div style={{ margin: "0 -24px 22px", padding: "18px 24px", background: on ? fill : "transparent", borderTop: "1px solid #22385A", borderBottom: "1px solid #22385A", transition: "background .25s" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {icon}
-          <span style={{ fontSize: 13.5, fontWeight: 500 }}>{title}</span>
-        </div>
-        <button onClick={() => setOn(!on)} aria-pressed={on}
-          style={{ width: 46, height: 26, borderRadius: 13, cursor: "pointer", position: "relative", background: on ? color : "#22385A", border: "none", transition: "background .2s" }}>
-          <span style={{ position: "absolute", top: 3, left: on ? 23 : 3, width: 20, height: 20, borderRadius: "50%", background: "#EAF0F7", transition: "left .2s" }} />
-        </button>
-      </div>
-      {on && <div style={{ marginTop: 18 }}>{children}</div>}
-    </div>
-  );
-}
-
-function AerialView({ la, lo, height = 220 }) {
-  const z = 19;
-  const n = Math.pow(2, z);
-  const latR = (la * Math.PI) / 180;
-  const xf = ((lo + 180) / 360) * n;
-  const yf = ((1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2) * n;
-  const tx = Math.floor(xf), ty = Math.floor(yf);
-  // pixel position of the point inside the 3x3 (768px) tile grid
-  const px = 256 + (xf - tx) * 256;
-  const py = 256 + (yf - ty) * 256;
-  const tiles = [];
-  for (let dy = -1; dy <= 1; dy++)
-    for (let dx = -1; dx <= 1; dx++)
-      tiles.push({ dx, dy, url: `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${ty + dy}/${tx + dx}` });
-  return (
-    <div style={{ position: "relative", width: "100%", height, overflow: "hidden", borderRadius: 10, border: "1px solid #22385A", background: "#0B1626" }}>
-      <div style={{ position: "absolute", width: 768, height: 768, left: `calc(50% - ${px}px)`, top: `calc(50% - ${py}px)` }}>
-        {tiles.map((t, i) => (
-          <img key={i} src={t.url} alt="" width={256} height={256} draggable={false}
-            style={{ position: "absolute", left: (t.dx + 1) * 256, top: (t.dy + 1) * 256, display: "block" }}
-            onError={(e) => { e.currentTarget.style.display = "none"; }} />
-        ))}
-      </div>
-      {/* pin on the house */}
-      <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -100%)", pointerEvents: "none" }}>
-        <svg width="26" height="34" viewBox="0 0 26 34">
-          <path d="M13 0C5.8 0 0 5.8 0 13c0 9.8 13 21 13 21s13-11.2 13-21C26 5.8 20.2 0 13 0z" fill="#F5B62E" stroke="#0B1626" strokeWidth="1.5" />
-          <circle cx="13" cy="13" r="5" fill="#0B1626" />
-        </svg>
-      </div>
-      <div className="mono" style={{ position: "absolute", right: 6, bottom: 4, fontSize: 8.5, color: "#fff", textShadow: "0 0 3px #000" }}>
-        Imagery © Esri World Imagery
-      </div>
-    </div>
-  );
-}
-
-function Toggle({ active, onClick, children, color = "#F5B62E", small }) {
-  return (
-    <button onClick={onClick}
-      style={{
-        flex: small ? "none" : 1, padding: small ? "6px 12px" : "9px 0", borderRadius: 8, cursor: "pointer",
-        fontSize: small ? 12.5 : 13.5, fontFamily: "inherit", fontWeight: 500,
-        background: active ? `${color}22` : "transparent",
-        border: `1px solid ${active ? color : "#22385A"}`,
-        color: active ? color : "#8FA3BC",
-      }}>
-      {children}
-    </button>
-  );
-}
-
-function Field({ label, hint, children }) {
-  return (
-    <div style={{ marginBottom: 22 }}>
-      <div style={{ fontSize: 13.5, fontWeight: 500, marginBottom: 4 }}>{label}</div>
-      {hint ? <div style={{ fontSize: 12, color: "#8FA3BC", marginBottom: 8 }}>{hint}</div> : <div style={{ height: 4 }} />}
-      {children}
-    </div>
-  );
-}
-
-function MiniInput({ label, value, min, max, step, onChange }) {
-  const [draft, setDraft] = useState(null);
-  const commit = (raw) => {
-    const v = parseFloat(raw);
-    if (!isNaN(v)) onChange(Math.min(max, Math.max(min, v)));
-    setDraft(null);
-  };
-  return (
-    <div>
-      <div className="mono" style={{ fontSize: 10.5, color: "#8FA3BC", marginBottom: 3 }}>{label}</div>
-      <input type="number" className="mono"
-        value={draft !== null ? draft : value}
-        min={min} max={max} step={step}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={(e) => commit(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") commit(e.currentTarget.value); }}
-        style={{ background: "#0B1626", color: "#EAF0F7", border: "1px solid #22385A", borderRadius: 6, padding: "5px 8px", fontSize: 13, width: 78 }} />
-    </div>
-  );
-}
-
-function NumInput({ prefix, value, min, max, step, onChange, decimals = 0 }) {
-  const [draft, setDraft] = useState(null);
-  const commit = (raw) => {
-    const v = parseFloat(raw);
-    if (!isNaN(v)) onChange(Math.min(max, Math.max(min, v)));
-    setDraft(null);
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
-      <span className="mono" style={{ color: "#F5B62E", fontSize: 15 }}>{prefix}</span>
-      <input type="number" className="mono"
-        value={draft !== null ? draft : (decimals ? value.toFixed(decimals) : value)}
-        min={min} max={max} step={step}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={(e) => commit(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") commit(e.currentTarget.value); }}
-        style={{ background: "#0B1626", color: "#EAF0F7", border: "1px solid #22385A", borderRadius: 8, padding: "8px 12px", fontSize: 16, width: 110 }} />
-    </div>
-  );
-}
-
-function Slider({ value, min, max, step, onChange }) {
-  return (
-    <input type="range" value={value} min={min} max={max} step={step}
-      onChange={(e) => onChange(parseFloat(e.target.value))} aria-label="slider" />
-  );
-}
-
-function Stat({ icon, label, value, sub, accent }) {
-  return (
-    <div style={{ background: "#13233A", border: "1px solid #22385A", borderRadius: 14, padding: "18px 20px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        {icon}
-        <span className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: "#8FA3BC", textTransform: "uppercase" }}>{label}</span>
-      </div>
-      <div style={{ fontSize: 24, fontWeight: 700, color: accent || "#EAF0F7" }}>{value}</div>
-      <div style={{ fontSize: 12.5, color: "#8FA3BC", marginTop: 4 }}>{sub}</div>
-    </div>
-  );
-}
