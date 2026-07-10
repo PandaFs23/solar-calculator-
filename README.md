@@ -52,19 +52,29 @@ npm run lint
 ```
 solar-calculator-/
 ├── src/
-│   ├── data/                  ← Data catalogs — easy to update without touching UI
-│   │   ├── constants.js       ← Colors, seasonal factors, calc constants (tax credit, cost/watt, etc.)
-│   │   ├── utilities.js       ← 100+ US utilities, rate schedules, getSchedules()
-│   │   ├── products.js        ← Solar panels, inverters, battery products
-│   │   ├── appliances.js      ← Household load defaults (watts + annual kWh)
-│   │   └── configs.js         ← System configuration presets (whole-home, partial, TOU, backup-only)
-│   ├── SolarCalculator.jsx    ← Main React component (~1350 lines)
-│   ├── main.jsx               ← App entry point
-│   └── index.css              ← Global styles
-├── server.js                  ← Local Node.js API server (port 3001)
-├── solar-calculator.js        ← Standalone CLI calculator
+│   ├── App.jsx                        ← Thin shell: header + Residential|Commercial mode switch
+│   ├── modules/
+│   │   ├── ResidentialCalculator.jsx  ← Residential calculator
+│   │   └── CommercialCalculator.jsx   ← Commercial calculator (demand charges, MACRS, peak shaving)
+│   ├── components/                    ← Shared UI (AerialView, inputs, toggles, stats, banner)
+│   ├── data/                          ← Data catalogs — easy to update without touching UI
+│   │   ├── constants.js               ← Colors, seasonal factors, calc constants
+│   │   ├── utilities.js               ← 100+ US utilities, rate schedules, getSchedules(u, commercial)
+│   │   ├── products.js                ← Residential panels, inverters, batteries
+│   │   ├── commercialProducts.js      ← Large-format commercial panels, 3-phase inverters, cost tiers
+│   │   ├── appliances.js              ← Household load defaults (watts + annual kWh)
+│   │   └── configs.js                 ← System configuration presets
+│   ├── lib/
+│   │   ├── geo.js                     ← Geocoding (Geoapify → Nominatim fallback), irradiance, OSM property type
+│   │   ├── solarMath.js               ← Residential sizing/economics model (pure)
+│   │   └── commercialMath.js          ← Commercial sizing/economics model (pure)
+│   ├── main.jsx                       ← App entry point
+│   └── index.css                      ← Global styles
+├── CLAUDE.md                          ← Authoritative dev briefing (data rules, model assumptions)
+├── server.js                          ← Local Node.js API server (port 3001)
+├── solar-calculator.js                ← Standalone CLI calculator
 └── .github/workflows/
-    └── deploy.yml             ← Auto-deploy to GitHub Pages on every push to main
+    └── deploy.yml                     ← Auto-deploy to GitHub Pages on every push to main
 ```
 
 ### Key Features
