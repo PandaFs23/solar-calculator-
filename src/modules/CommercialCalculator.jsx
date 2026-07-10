@@ -10,7 +10,8 @@ import { STATES, UTILITIES, getSchedules } from "../data/utilities.js";
 import { COMMERCIAL_PANEL_PRODUCTS, COMMERCIAL_INVERTER_PRODUCTS, COMMERCIAL_COST_TIERS } from "../data/commercialProducts.js";
 import { BATTERY_PRODUCTS } from "../data/products.js";
 import { computeCommercial, tierCostPerWatt } from "../lib/commercialMath.js";
-import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility } from "../lib/geo.js";
+import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility, fetchPropertyType } from "../lib/geo.js";
+import ModeSuggestionBanner from "../components/ModeSuggestionBanner.jsx";
 import AerialView from "../components/AerialView.jsx";
 import Toggle from "../components/Toggle.jsx";
 import Field from "../components/Field.jsx";
@@ -18,7 +19,7 @@ import NumInput from "../components/NumInput.jsx";
 import Slider from "../components/Slider.jsx";
 import Stat from "../components/Stat.jsx";
 
-export default function CommercialCalculator() {
+export default function CommercialCalculator({ onSwitchMode, onLocated, suppressedAddresses, suppressAddress }) {
   const [stateSel, setStateSel] = useState("CA");
   const [utilityId, setUtilityId] = useState("sdge");
   const [scheduleId, setScheduleId] = useState("gs_demand");
@@ -57,6 +58,7 @@ export default function CommercialCalculator() {
   const [geoMsg, setGeoMsg] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [sitePos, setSitePos] = useState(null);
+  const [propType, setPropType] = useState(null); // OSM building-tag hint for the located address
   const sugTimer = useRef(null);
 
   const utility = UTILITIES.find((u) => u.id === utilityId);
@@ -142,6 +144,12 @@ export default function CommercialCalculator() {
     setSitePos({ la, lo });
     setGeoState("loading");
     setGeoMsg("Pulling a year of solar data for this location…");
+    // property-type hint runs in parallel and never blocks the solar data
+    setPropType(null);
+    onLocated?.(shortName);
+    fetchPropertyType(la, lo)
+      .then((pt) => setPropType({ ...pt, addr: shortName }))
+      .catch((err) => console.warn("Property type lookup failed:", err));
     try {
       const { psh, yr } = await fetchPeakSunHours(la, lo);
       setSunHrs(Math.round(psh * 10) / 10);
@@ -258,6 +266,11 @@ export default function CommercialCalculator() {
                   <div style={{ marginTop: 10 }}>
                     <AerialView la={sitePos.la} lo={sitePos.lo} />
                     <div className="mono" style={{ fontSize: 10.5, color: C.dim, marginTop: 4 }}>Roof view of the located property — check usable roof area, HVAC units, and shading</div>
+                    {propType?.propertyType === "residential" && !suppressedAddresses?.has(propType.addr) && (
+                      <ModeSuggestionBanner osmLabel={propType.osmLabel} targetMode="residential"
+                        onSwitch={() => { suppressAddress?.(propType.addr); onSwitchMode?.("residential"); }}
+                        onDismiss={() => suppressAddress?.(propType.addr)} />
+                    )}
                   </div>
                 )}
               </Field>

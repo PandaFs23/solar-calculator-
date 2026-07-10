@@ -3,8 +3,24 @@
 // see .env.example. Open-Meteo needs no key.
 import { UTILITIES, STATE_CODES } from "../data/utilities.js";
 
+// Without Geoapify keys (local testing) we fall back to Nominatim's free
+// search API — fine for light interactive use per the OSM usage policy; the
+// browser's Referer header identifies the app. Geoapify remains the primary
+// path when keys are configured (better rate limits for a deployed site).
+async function nominatimSearch(text, limit) {
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text)}&format=jsonv2&limit=${limit}&countrycodes=us&addressdetails=1`
+  ).then((x) => x.json());
+  return (res || []).map((g) => ({
+    label: g.display_name,
+    lat: parseFloat(g.lat), lon: parseFloat(g.lon),
+    state: g.address?.state || null,
+  }));
+}
+
 export async function fetchAddressSuggestions(text) {
   const key = import.meta.env.VITE_GEOAPIFY_AUTOCOMPLETE_KEY;
+  if (!key) return nominatimSearch(text, 5);
   const res = await fetch(
     `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(text)}&filter=countrycode:us&limit=5&format=json&apiKey=${key}`
   ).then((x) => x.json());
@@ -17,6 +33,12 @@ export async function fetchAddressSuggestions(text) {
 
 export async function geocodeAddress(text) {
   const key = import.meta.env.VITE_GEOAPIFY_KEY;
+  if (!key) {
+    const results = await nominatimSearch(text, 1);
+    if (!results.length) throw new Error("not found");
+    const { lat, lon, label, state } = results[0];
+    return { lat, lon, formatted: label, state };
+  }
   const geo = await fetch(
     `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(text)}&filter=countrycode:us&limit=1&format=json&apiKey=${key}`
   ).then((x) => x.json());
@@ -36,6 +58,33 @@ export async function fetchPeakSunHours(la, lo) {
   const annualKwhM2 = days.reduce((s, v) => s + v, 0) / 3.6; // MJ→kWh
   const psh = Math.min(7, Math.max(3, annualKwhM2 / days.length));
   return { psh, yr };
+}
+
+// ---- property-type detection via OpenStreetMap (free, no key) ----
+// Nominatim reverse geocoding at zoom=18 frequently carries the building's
+// class/type tag even when forward search doesn't. HONESTY NOTE: OSM building
+// tagging is community-sourced and spotty — many properties are untagged or
+// stale. Treat the result as a hint, never a verdict; the manual mode toggle
+// in the header is the primary control.
+// TODO: if the owner later buys a Google Places API key, its `place types`
+// are the higher-accuracy drop-in replacement at exactly this seam.
+const OSM_RESIDENTIAL_TYPES = new Set(["house", "residential", "apartments", "detached", "semidetached_house", "terrace"]);
+const OSM_COMMERCIAL_CLASSES = new Set(["shop", "office", "amenity", "industrial", "craft"]);
+const OSM_COMMERCIAL_TYPES = new Set(["commercial", "retail", "industrial", "warehouse", "office", "supermarket"]);
+
+export function classifyOsmPlace(category, type) {
+  if (OSM_RESIDENTIAL_TYPES.has(type)) return "residential";
+  if (OSM_COMMERCIAL_CLASSES.has(category) || OSM_COMMERCIAL_TYPES.has(type)) return "commercial";
+  return "unknown";
+}
+
+export async function fetchPropertyType(la, lo) {
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/reverse?lat=${la}&lon=${lo}&format=jsonv2&zoom=18&addressdetails=1&extratags=1`
+  ).then((x) => x.json());
+  const category = res?.category || res?.class || "";
+  const type = res?.type || "";
+  return { propertyType: classifyOsmPlace(category, type), osmLabel: type.replace(/_/g, " "), category };
 }
 
 // rough state + utility territory guess from coordinates; returns

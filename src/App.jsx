@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Sun } from "lucide-react";
 import { C } from "./data/constants.js";
 import ResidentialCalculator from "./modules/ResidentialCalculator.jsx";
@@ -30,6 +30,20 @@ function ModeSwitch({ mode, setMode }) {
 
 export default function App() {
   const [appMode, setAppMode] = useState("residential");
+
+  // OSM property-type suggestion plumbing: modules report the located address
+  // and show a hint banner when OSM tags it as the other mode's type. Manual
+  // mode choice always wins — picking a mode via the pill suppresses the
+  // banner for the currently-located address.
+  const [suppressed, setSuppressed] = useState(() => new Set());
+  const lastLocatedAddr = useRef(null);
+  const suppressAddress = (addr) => setSuppressed((p) => new Set(p).add(addr));
+  const onLocated = (addr) => { lastLocatedAddr.current = addr; };
+  const setModeManually = (m) => {
+    if (lastLocatedAddr.current) suppressAddress(lastLocatedAddr.current);
+    setAppMode(m);
+  };
+  const moduleProps = { onSwitchMode: setAppMode, onLocated, suppressedAddresses: suppressed, suppressAddress };
 
   return (
     <div className="app-root" style={{ minHeight: "100vh", background: C.night, color: C.text, fontFamily: "'Space Grotesk', 'Segoe UI', sans-serif" }}>
@@ -63,7 +77,7 @@ export default function App() {
           <Sun size={26} color={C.gold} />
           <span className="mono" style={{ fontSize: 12, letterSpacing: 3, color: C.gold }}>SOLAR SIZING WORKSHEET</span>
           <div style={{ marginLeft: "auto" }}>
-            <ModeSwitch mode={appMode} setMode={setAppMode} />
+            <ModeSwitch mode={appMode} setMode={setModeManually} />
           </div>
         </div>
       </div>
@@ -71,10 +85,10 @@ export default function App() {
       {/* both modules stay mounted so each keeps its state across switches;
           display:none also removes the inactive module's print template */}
       <div style={{ display: appMode === "residential" ? "block" : "none" }}>
-        <ResidentialCalculator />
+        <ResidentialCalculator {...moduleProps} />
       </div>
       <div style={{ display: appMode === "commercial" ? "block" : "none" }}>
-        <CommercialCalculator />
+        <CommercialCalculator {...moduleProps} />
       </div>
     </div>
   );
