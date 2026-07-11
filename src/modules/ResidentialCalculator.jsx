@@ -15,6 +15,7 @@ import { computeResidential } from "../lib/solarMath.js";
 import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility, fetchPropertyType } from "../lib/geo.js";
 import ModeSuggestionBanner from "../components/ModeSuggestionBanner.jsx";
 import AerialView from "../components/AerialView.jsx";
+import RegulationsPanel from "../components/RegulationsPanel.jsx";
 import Toggle from "../components/Toggle.jsx";
 import Field from "../components/Field.jsx";
 import MiniInput from "../components/MiniInput.jsx";
@@ -339,6 +340,8 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                   {STATES.map((st) => <option key={st} value={st}>{st}</option>)}
                 </select>
               </Field>
+
+              <RegulationsPanel stateCode={stateSel} />
 
               <Field label="Power company in your area">
                 <select value={utilityId} onChange={(e) => pickUtility(e.target.value)}

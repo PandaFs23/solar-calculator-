@@ -24,19 +24,22 @@ src/
     ResidentialCalculator.jsx    # the original calculator
     CommercialCalculator.jsx     # commercial module (see model below)
   components/                    # shared UI: AerialView, Toggle, Field, MiniInput, NumInput,
-                                 #   Slider, Stat, Section, ModeSuggestionBanner
+                                 #   Slider, Stat, Section, ModeSuggestionBanner, RegulationsPanel
   data/
     constants.js                 # colors, seasonal factors, calc constants
     utilities.js                 # 100+ utilities, rate schedules, getSchedules(u, commercial=false)
     products.js                  # residential panels/inverters/batteries (specs from owner DB v17e)
     commercialProducts.js        # large-format panels (>500 W), 3-phase inverters, $/W cost tiers
     appliances.js, configs.js    # household loads, system-config presets
+    regulations.js                # solar rules & incentives directory (see below)
   lib/
     geo.js                       # Geoapify (primary) + Nominatim (keyless fallback) geocoding,
                                  #   Open-Meteo irradiance, utility-territory guess,
                                  #   OSM property-type detection
     solarMath.js                 # computeResidential() — pure, the entire residential model
     commercialMath.js            # computeCommercial() — pure, the entire commercial model
+scripts/
+  check-links.mjs                # verifies every URL in src/data/regulations.js (see below)
 server.js                        # optional local API (port 3001); solar-calculator.js = CLI engine
 ```
 
@@ -54,6 +57,17 @@ The pure functions in `lib/*Math.js` are the calculation ground truth — UI fil
 ## Property-type detection (mode suggestion)
 
 After a successful address locate, `lib/geo.js#fetchPropertyType` reverse-geocodes via Nominatim at zoom=18 and classifies OSM `class`/`type` tags (house/apartments/… → residential; shop/office/amenity/industrial/craft or commercial/retail/warehouse/supermarket → commercial; else unknown). On a mismatch the module shows a dismissible banner with a one-click switch — **never auto-switches**. Manual mode choice (pill, dismiss, or accept) suppresses the banner for that address (`App.jsx` owns the suppressed set). OSM tagging is community-sourced and spotty — it's a hint; the manual pill is the primary control. If a Google Places key ever exists, its `place types` are the drop-in upgrade at this seam.
+
+## Regulations data
+
+`src/data/regulations.js` backs the "⚖ Solar rules & incentives in {state}" button (renders below the state dropdown in both modules; `src/components/RegulationsPanel.jsx`). It's a curated-links directory, not a legal database — the honest-data rule here is the same spirit as rule 1 above: **link to sources that maintain themselves (DSIRE, .gov, SEIA) instead of hardcoding paraphrased law.**
+
+- `FEDERAL_ITEMS` — federal credits/depreciation (IRS, DSIRE, energy.gov), always shown as a category in every state's panel.
+- `STATE_REGS` — curated depth (real statute citations, specific programs) for 10 states: CA, TX, AZ, CO, FL, NV, NC, NJ, NY, MA.
+- `fallbackFor(stateCode)` — every other state + DC gets pattern-generated links: DSIRE's state query, the FTC's national solar consumer-protection guide, and a PUC-complaint search — safe because those URL patterns work for any state, verified against a sample before relying on them. (SEIA's per-state pages were dropped from the fallback in 2026-07: they now hard-block automated requests with a Cloudflare 403, so `check-links` can't verify them — the honest-data rule says don't ship a link you can't machine-check.)
+- Every entry that asserts a specific rule (rate, statute number, deadline) carries a `verified: "YYYY-MM-DD"` date. Where a citation couldn't be confirmed against a live source, the entry links DSIRE's summary instead and says so in `note` — never assert an unconfirmed legal detail as fact.
+- `scripts/check-links.mjs` (`npm run check-links`) actually imports and executes `regulations.js` (via `src/package.json`'s `"type": "module"`, scoped to that subtree only — root stays CommonJS for `server.js`/`solar-calculator.js`) rather than regex-scanning the source, so dynamically-built URLs (template literals, `fallbackFor()`'s per-state links) are checked with their real resolved values across all 50 states + DC, not just the 10 curated ones. HEAD falls back to GET (many gov/Cloudflare-fronted sites block or mis-handle HEAD); a Chrome-like User-Agent is required or SEIA/some `.gov` sites 403.
+- **Maintenance**: re-run `npm run check-links` quarterly (regs and program pages move); DSIRE is the self-maintaining backbone so fallback-only states degrade gracefully even without a refresh. If a curated entry starts failing, prefer replacing it with DSIRE's summary over trying to hand-fix a broken deep link.
 
 ## Local development
 

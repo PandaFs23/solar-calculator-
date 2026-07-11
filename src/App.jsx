@@ -61,6 +61,18 @@ export default function App() {
         .spin { animation: spin 1s linear infinite; }
         @media (prefers-reduced-motion: reduce) { .cell, .spin { animation: none; } }
         button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid ${C.gold}; outline-offset: 2px; }
+
+        /* Regulations panel: bottom sheet on mobile, centered modal from 900px up */
+        .regs-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-end; justify-content: center; background: rgba(11,22,38,.72); }
+        .regs-panel { width: 100%; max-height: 88vh; border-radius: 16px 16px 0 0; }
+        @media (min-width: 900px) {
+          .regs-overlay { align-items: center; padding: 24px; }
+          .regs-panel { width: 560px; max-height: 82vh; border-radius: 14px; }
+        }
+        .regs-cat-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .2s ease; }
+        .regs-cat-body.open { grid-template-rows: 1fr; }
+        .regs-cat-body > div { overflow: hidden; }
+        @media (prefers-reduced-motion: reduce) { .regs-cat-body { transition: none; } }
         .print-report { display: none; }
         @media print {
           @page { margin: 12mm; }

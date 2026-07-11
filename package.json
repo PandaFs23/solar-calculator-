@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "api": "node server.js",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "check-links": "node scripts/check-links.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

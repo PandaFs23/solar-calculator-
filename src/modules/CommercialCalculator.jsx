@@ -13,6 +13,7 @@ import { computeCommercial, tierCostPerWatt } from "../lib/commercialMath.js";
 import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility, fetchPropertyType } from "../lib/geo.js";
 import ModeSuggestionBanner from "../components/ModeSuggestionBanner.jsx";
 import AerialView from "../components/AerialView.jsx";
+import RegulationsPanel from "../components/RegulationsPanel.jsx";
 import Toggle from "../components/Toggle.jsx";
 import Field from "../components/Field.jsx";
 import NumInput from "../components/NumInput.jsx";
@@ -281,6 +282,8 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
                   {STATES.map((st) => <option key={st} value={st}>{st}</option>)}
                 </select>
               </Field>
+
+              <RegulationsPanel stateCode={stateSel} />
 
               <Field label="Utility">
                 <select value={utilityId} onChange={(e) => pickUtility(e.target.value)}
