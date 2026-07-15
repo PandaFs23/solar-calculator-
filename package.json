@@ -1,6 +1,6 @@
 {
   "name": "solar-calculator-local",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Local Node.js solar sizing calculator server",
   "main": "server.js",
   "scripts": {

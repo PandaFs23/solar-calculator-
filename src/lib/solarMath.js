@@ -9,8 +9,8 @@ import { APPLIANCES } from "../data/appliances.js";
 export function computeResidential({
   rate, inputMode, annualKwh, bill,
   loads, loadVals, evMiles,
-  hasExisting, existKw, existAge, existProdOverride, inverter,
-  sunHrs, panels, panelW, invProd,
+  hasExisting, existKw, existAge, existProdOverride, inverter, existPanelW,
+  sunHrs, panels, panelW, invProd, sizingBasis, targetKw,
   battMode, battUnits, battProd, battKwh,
 }) {
   const getWatts = (a) => loadVals[a.id]?.watts ?? a.watts;
@@ -45,13 +45,22 @@ export function computeResidential({
     existProd = existProdOverride ?? existKw * sunHrs * eff * 365;
   }
   const existOffsetPct = (existProd / sizingUsage) * 100;
-  const existPanels = hasExisting ? Math.round((existKw * 1000) / panelW) : 0;
+  // count existing panels off the recorded existing module when known, else the new panel wattage
+  const existPanels = hasExisting ? Math.round((existKw * 1000) / (existPanelW || panelW)) : 0;
 
   // new system covers the remainder (incl. future loads)
   const remainingKwh = Math.max(sizingUsage - existProd, 0);
-  const autoKw = (remainingKwh / 365) / (sunHrs * invProd.derate);
+  // kWh produced per installed kW per year — the conversion at the heart of both sizing bases
+  const kwhPerKwYr = sunHrs * invProd.derate * 365;
+  // ENERGY basis: size the array to the kW that covers the remaining usage
+  const autoKw = kwhPerKwYr > 0 ? remainingKwh / kwhPerKwYr : 0;
   const autoPanels = Math.ceil((autoKw * 1000) / panelW);
-  const nPanels = panels ?? autoPanels;
+  // POWER basis: user targets a system wattage directly; snap to whole panels
+  const powerPanels = Math.max(Math.round(((targetKw || 0) * 1000) / panelW), 0);
+  const powerKw = (powerPanels * panelW) / 1000;
+  // the active array follows the chosen basis, unless the user manually overrides the panel count
+  const basisPanels = sizingBasis === "power" ? powerPanels : autoPanels;
+  const nPanels = panels ?? basisPanels;
   const actualKw = (nPanels * panelW) / 1000;
   const newProd = actualKw * sunHrs * invProd.derate * 365;
   const newOffsetPct = (newProd / sizingUsage) * 100;
@@ -90,6 +99,12 @@ export function computeResidential({
   const payback = annualSavings > 0 && netCost > 0 ? netCost / annualSavings : 0;
   const roofArea = nPanels * PANEL_SQFT;
 
+  // both sizing bases, computed side by side so the UI can show the difference & energy flow
+  const prodOf = (kw) => kw * kwhPerKwYr;
+  const offsetOf = (kw) => (sizingUsage > 0 ? ((existProd + prodOf(kw)) / sizingUsage) * 100 : 0);
+  const sizeEnergy = { kw: autoKw, panels: autoPanels, prod: prodOf(autoKw), offsetPct: offsetOf(autoKw) };
+  const sizePower = { kw: powerKw, panels: powerPanels, prod: prodOf(powerKw), offsetPct: offsetOf(powerKw) };
+
   const monthly = MONTHS.map((m, i) => {
     const scale = (DAYS[i] * SEASON[i]) / SCALE_TOTAL;
     return {
@@ -117,6 +132,7 @@ export function computeResidential({
   return {
     monthlyKwh, annualUsage, sizingUsage, loadsNow, loadsFuture, estMonthlyBill,
     nPanels, autoPanels, actualKw,
+    sizingBasis, kwhPerKwYr, sizeEnergy, sizePower,
     existProd, existOffsetPct, existPanels, newProd, newOffsetPct, offsetPct,
     battSavings, backupHours, battCost, shiftable, battKwhEff,
     backupLoads, backupWatts, backupDailyKwh, invKw, backupOk, backupHrsCritical,

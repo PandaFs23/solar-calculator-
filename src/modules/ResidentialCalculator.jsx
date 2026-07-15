@@ -8,7 +8,7 @@ import {
 
 import { C, TAX_CREDIT, RATE_ESCALATION, EXPORT_RATE, BATT_EFF, EV_MI_PER_KWH } from "../data/constants.js";
 import { STATES, STATE_CODES, UTILITIES, INVERTERS, getSchedules } from "../data/utilities.js";
-import { PANEL_PRODUCTS, INVERTER_PRODUCTS, BATTERY_PRODUCTS } from "../data/products.js";
+import { PANEL_PRODUCTS, LEGACY_PANEL_PRODUCTS, DISCONTINUED_PANEL_PRODUCTS, ALL_PANEL_PRODUCTS, INVERTER_PRODUCTS, LEGACY_INVERTER_PRODUCTS, DISCONTINUED_INVERTER_PRODUCTS, ALL_INVERTER_PRODUCTS, BATTERY_PRODUCTS, LEGACY_BATTERY_PRODUCTS, DISCONTINUED_BATTERY_PRODUCTS, ALL_BATTERY_PRODUCTS } from "../data/products.js";
 import { APPLIANCES } from "../data/appliances.js";
 import { SYS_CONFIGS } from "../data/configs.js";
 import { computeResidential } from "../lib/solarMath.js";
@@ -34,6 +34,8 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const [rate, setRate] = useState(UTILITIES[0].rate);
   const [sunHrs, setSunHrs] = useState(UTILITIES[0].sunHrs);
   const [panels, setPanels] = useState(null);
+  const [sizingBasis, setSizingBasis] = useState("energy"); // 'energy' (size to kWh usage) | 'power' (size to target kW)
+  const [targetKw, setTargetKw] = useState(6);
   const [chartView, setChartView] = useState("monthly");
 
   // product selections
@@ -49,10 +51,13 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const [existType, setExistType] = useState("micro");
   const [existAge, setExistAge] = useState(5);
   const [existProdOverride, setExistProdOverride] = useState(null);
+  const [existPanelProdId, setExistPanelProdId] = useState(""); // "" = not specified / generic
+  const [existInvProdId, setExistInvProdId] = useState("");     // "" = use the generic architecture toggle
 
   // battery
   const [battMode, setBattMode] = useState("none"); // 'none' | 'existing' | 'new'
   const [battKwh, setBattKwh] = useState(13.5);
+  const [existBattProdId, setExistBattProdId] = useState(""); // "" = not specified / generic
 
   // report
   const [customerName, setCustomerName] = useState("");
@@ -80,10 +85,18 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
 
   const utility = UTILITIES.find((u) => u.id === utilityId);
   const inverter = INVERTERS.find((i) => i.id === existType);
-  const panelProd = PANEL_PRODUCTS.find((p) => p.id === panelProdId);
+  const panelProd = ALL_PANEL_PRODUCTS.find((p) => p.id === panelProdId);
   const invProd = INVERTER_PRODUCTS.find((p) => p.id === invProdId);
   const battProd = BATTERY_PRODUCTS.find((p) => p.id === battProdId);
   const panelW = panelProd.watts;
+  // recorded existing-system specs (optional — "" = generic)
+  const existPanelProd = ALL_PANEL_PRODUCTS.find((p) => p.id === existPanelProdId) || null;
+  const existInvProd = ALL_INVERTER_PRODUCTS.find((p) => p.id === existInvProdId) || null;
+  const existBattProd = ALL_BATTERY_PRODUCTS.find((p) => p.id === existBattProdId) || null;
+  const existPanelW = existPanelProd ? existPanelProd.watts : panelW; // count existing panels off the real module when known
+  const existInverter = existInvProd || inverter; // a recorded inverter model overrides the generic architecture derate
+  // label for the existing-panel picker: avoid "Solyndra Solyndra …" when the model name already leads with the brand
+  const panelOptLabel = (p) => (p.name.toLowerCase().startsWith(p.mfr.split(" ")[0].toLowerCase()) ? p.name : `${p.mfr} ${p.name}`);
 
   // apply a configuration preset: sets battery mode/product/units and backup flags
   const applyConfig = (cfg) => {
@@ -230,10 +243,10 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const r = useMemo(() => computeResidential({
     rate, inputMode, annualKwh, bill,
     loads, loadVals, evMiles,
-    hasExisting, existKw, existAge, existProdOverride, inverter,
-    sunHrs, panels, panelW, invProd,
+    hasExisting, existKw, existAge, existProdOverride, inverter: existInverter, existPanelW,
+    sunHrs, panels, panelW, invProd, sizingBasis, targetKw,
     battMode, battUnits, battProd, battKwh,
-  }), [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, existKw, existType, existAge, existProdOverride, inverter, battMode, battKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits]);
+  }), [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, existKw, existType, existAge, existProdOverride, existInverter, existPanelW, sizingBasis, targetKw, battMode, battKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits]);
 
   const fmt = (n, d = 0) =>
     n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -436,13 +449,55 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 <Field label={`Existing system size: ${existKw.toFixed(1)} kW`} hint="From the original install docs or inverter monitoring app">
                   <Slider value={existKw} min={1} max={20} step={0.5} onChange={setExistKw} />
                 </Field>
+                <Field label="Existing panel model" hint="Record the actual panels on the roof — includes older & discontinued models. Sets how many existing panels the size implies.">
+                  <select value={existPanelProdId} onChange={(e) => setExistPanelProdId(e.target.value)}
+                    style={{ width: "100%", background: C.night, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit", cursor: "pointer" }}>
+                    <option value="">Not sure / generic</option>
+                    <optgroup label="Current products">
+                      {PANEL_PRODUCTS.map((p) => (
+                        <option key={p.id} value={p.id}>{panelOptLabel(p)} — {p.watts} W</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Legacy (older, still supported)">
+                      {LEGACY_PANEL_PRODUCTS.map((p) => (
+                        <option key={p.id} value={p.id}>{panelOptLabel(p)} — {p.watts} W</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Discontinued (no longer sold)">
+                      {DISCONTINUED_PANEL_PRODUCTS.map((p) => (
+                        <option key={p.id} value={p.id}>{panelOptLabel(p)} — {p.watts} W</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  {existPanelProd && (
+                    <div className="mono" style={{ fontSize: 11.5, color: C.green, marginTop: 4, lineHeight: 1.55 }}>{existPanelProd.note}</div>
+                  )}
+                </Field>
                 <Field label="Inverter architecture">
                   <div style={{ display: "flex", gap: 8 }}>
                     {INVERTERS.map((inv) => (
                       <Toggle key={inv.id} active={existType === inv.id} onClick={() => setExistType(inv.id)} color={C.green}>{inv.name}</Toggle>
                     ))}
                   </div>
-                  <div style={{ fontSize: 12, color: C.dim, marginTop: 8, lineHeight: 1.55 }}>{inverter.note}</div>
+                  <div style={{ fontSize: 12, color: C.dim, marginTop: 8, lineHeight: 1.55 }}>{existInvProd ? "Generic — overridden by the specific model below." : inverter.note}</div>
+                </Field>
+                <Field label="Existing inverter model" hint="Optional — record the actual inverter (incl. legacy & discontinued). A specific model overrides the architecture above and sets the existing-production derate.">
+                  <select value={existInvProdId} onChange={(e) => setExistInvProdId(e.target.value)}
+                    style={{ width: "100%", background: C.night, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit", cursor: "pointer" }}>
+                    <option value="">Use architecture above</option>
+                    <optgroup label="Current products">
+                      {INVERTER_PRODUCTS.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                    </optgroup>
+                    <optgroup label="Legacy (older, still supported)">
+                      {LEGACY_INVERTER_PRODUCTS.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                    </optgroup>
+                    <optgroup label="Discontinued (no longer sold)">
+                      {DISCONTINUED_INVERTER_PRODUCTS.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                    </optgroup>
+                  </select>
+                  {existInvProd && (
+                    <div className="mono" style={{ fontSize: 11.5, color: C.green, marginTop: 4, lineHeight: 1.55 }}>{existInvProd.note}</div>
+                  )}
                 </Field>
                 <Field label={`System age: ${existAge} yrs`} hint="Panels lose ~0.5% output per year">
                   <Slider value={existAge} min={0} max={25} step={1} onChange={setExistAge} />
@@ -488,15 +543,42 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                         </Field>
                       </>
                     ) : (
-                      <Field label={`Existing battery capacity: ${battKwh.toFixed(1)} kWh`}
-                        hint="Common sizes — Powerwall 3: 13.5 · Enphase 5P: 5.0 · FranklinWH: 15.0 · stack for more">
-                        <Slider value={battKwh} min={5} max={40} step={0.5} onChange={setBattKwh} />
-                        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                          {[5, 13.5, 27, 40].map((k) => (
-                            <Toggle key={k} active={battKwh === k} onClick={() => setBattKwh(k)} color={C.teal} small>{k} kWh</Toggle>
-                          ))}
-                        </div>
-                      </Field>
+                      <>
+                        <Field label="Existing battery model" hint="Pick the installed battery to record its specs and set capacity — or leave generic and just set kWh below.">
+                          <select value={existBattProdId}
+                            onChange={(e) => { const id = e.target.value; setExistBattProdId(id); const bp = ALL_BATTERY_PRODUCTS.find((p) => p.id === id); if (bp) setBattKwh(bp.unitKwh); }}
+                            style={{ width: "100%", background: C.night, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit", cursor: "pointer" }}>
+                            <option value="">Not sure / generic</option>
+                            <optgroup label="Current products">
+                              {BATTERY_PRODUCTS.map((p) => (
+                                <option key={p.id} value={p.id}>{p.name} — {p.unitKwh} kWh{p.unitKw ? ` / ${p.unitKw} kW` : ""}</option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Legacy (older, still supported)">
+                              {LEGACY_BATTERY_PRODUCTS.map((p) => (
+                                <option key={p.id} value={p.id}>{p.name} — {p.unitKwh} kWh{p.unitKw ? ` / ${p.unitKw} kW` : ""}</option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Discontinued (no longer sold)">
+                              {DISCONTINUED_BATTERY_PRODUCTS.map((p) => (
+                                <option key={p.id} value={p.id}>{p.name} — {p.unitKwh} kWh{p.unitKw ? ` / ${p.unitKw} kW` : ""}</option>
+                              ))}
+                            </optgroup>
+                          </select>
+                          {existBattProd && (
+                            <div className="mono" style={{ fontSize: 11.5, color: C.teal, marginTop: 4, lineHeight: 1.55 }}>{existBattProd.note}</div>
+                          )}
+                        </Field>
+                        <Field label={`Existing battery capacity: ${battKwh.toFixed(1)} kWh`}
+                          hint="Common sizes — Powerwall 3: 13.5 · Enphase 5P: 5.0 · FranklinWH: 15.0 · stack for more">
+                          <Slider value={battKwh} min={5} max={40} step={0.5} onChange={setBattKwh} />
+                          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                            {[5, 13.5, 27, 40].map((k) => (
+                              <Toggle key={k} active={battKwh === k} onClick={() => setBattKwh(k)} color={C.teal} small>{k} kWh</Toggle>
+                            ))}
+                          </div>
+                        </Field>
+                      </>
                     )}
                     <div className="mono" style={{ fontSize: 11.5, color: C.teal, lineHeight: 1.8 }}>
                       Backup: ~{fmt(r.backupHours)} hrs at avg load · shifts {fmt(r.shiftable)} kWh/yr of surplus
@@ -507,18 +589,38 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 )}
               </div>
 
-              <Field label={`New array: ${r.nPanels} panels`}
-                hint={panels === null
-                  ? (hasExisting ? "Auto-sized to cover the remaining usage — drag to explore" : "Auto-sized to cover 100% of usage — drag to explore")
-                  : `Auto size: ${r.autoPanels} panels`}>
-                <Slider value={r.nPanels} min={0} max={Math.max(48, r.autoPanels + 12)} step={1} onChange={(v) => setPanels(v)} />
-                {panels !== null && (
-                  <button onClick={() => setPanels(null)}
-                    style={{ marginTop: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 6, padding: "5px 10px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
-                    Reset to auto size
-                  </button>
-                )}
+              <Field label="Size the system by" hint="Energy sizes the array to cover your kWh usage. Power lets you dial in a target wattage directly — the panel below compares both.">
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Toggle active={sizingBasis === "energy"} onClick={() => { setSizingBasis("energy"); setPanels(null); }}>Energy · kWh usage</Toggle>
+                  <Toggle active={sizingBasis === "power"} onClick={() => { setSizingBasis("power"); setPanels(null); }}>Power · target kW</Toggle>
+                </div>
               </Field>
+
+              {sizingBasis === "power" ? (
+                <Field label={`Target system size: ${targetKw.toFixed(1)} kW`}
+                  hint={`≈ ${r.sizePower.panels} panels × ${panelW} W · produces ~${fmt(r.sizePower.prod)} kWh/yr · ${fmt(Math.min(r.sizePower.offsetPct, 999))}% offset`}>
+                  <Slider value={targetKw} min={1} max={20} step={0.5} onChange={(v) => { setTargetKw(v); setPanels(null); }} />
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button onClick={() => { setTargetKw(Math.round(r.sizeEnergy.kw * 2) / 2); setPanels(null); }}
+                      style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 6, padding: "5px 10px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                      Match my usage ({fmt(r.sizeEnergy.kw, 1)} kW)
+                    </button>
+                  </div>
+                </Field>
+              ) : (
+                <Field label={`New array: ${r.nPanels} panels`}
+                  hint={panels === null
+                    ? (hasExisting ? "Auto-sized to cover the remaining usage — drag to explore" : "Auto-sized to cover 100% of usage — drag to explore")
+                    : `Auto size: ${r.autoPanels} panels`}>
+                  <Slider value={r.nPanels} min={0} max={Math.max(48, r.autoPanels + 12)} step={1} onChange={(v) => setPanels(v)} />
+                  {panels !== null && (
+                    <button onClick={() => setPanels(null)}
+                      style={{ marginTop: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 6, padding: "5px 10px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                      Reset to auto size
+                    </button>
+                  )}
+                </Field>
+              )}
 
               <Field label="Panel product" hint={panelProd.note}>
                 <select value={panelProdId} onChange={(e) => setPanelProdId(e.target.value)}
@@ -526,6 +628,13 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                   {[...new Set(PANEL_PRODUCTS.map((p) => p.mfr))].map((m) => (
                     <optgroup key={m} label={m}>
                       {PANEL_PRODUCTS.filter((p) => p.mfr === m).map((p) => (
+                        <option key={p.id} value={p.id}>{p.name} — {p.watts} W · {p.eff}%</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  {[...new Set(LEGACY_PANEL_PRODUCTS.map((p) => p.mfr))].map((m) => (
+                    <optgroup key={`legacy-${m}`} label={`${m} — legacy (older / discontinued)`}>
+                      {LEGACY_PANEL_PRODUCTS.filter((p) => p.mfr === m).map((p) => (
                         <option key={p.id} value={p.id}>{p.name} — {p.watts} W · {p.eff}%</option>
                       ))}
                     </optgroup>
@@ -574,6 +683,40 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                     Producing {fmt(r.offsetPct - 100)}% more than the home uses{battMode !== "none" ? " — the battery captures surplus that would otherwise export cheap" : " — surplus may earn export credits"}
                   </div>
                 )}
+              </div>
+
+              {/* ---- energy ⇄ power sizing comparison + how energy flows (technical) ---- */}
+              <div style={{ margin: "0 0 16px", padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim }}>SIZING · ENERGY ⇄ POWER</span>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => { setSizingBasis("energy"); setPanels(null); }}
+                      style={{ fontFamily: "inherit", fontSize: 11.5, cursor: "pointer", borderRadius: 6, padding: "4px 10px", border: `1px solid ${sizingBasis === "energy" ? C.gold : C.line}`, background: sizingBasis === "energy" ? C.gold : "transparent", color: sizingBasis === "energy" ? C.night : C.dim }}>kWh</button>
+                    <button onClick={() => { setSizingBasis("power"); setPanels(null); }}
+                      style={{ fontFamily: "inherit", fontSize: 11.5, cursor: "pointer", borderRadius: 6, padding: "4px 10px", border: `1px solid ${sizingBasis === "power" ? C.gold : C.line}`, background: sizingBasis === "power" ? C.gold : "transparent", color: sizingBasis === "power" ? C.night : C.dim }}>kW</button>
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div style={{ padding: 10, borderRadius: 8, background: sizingBasis === "energy" ? C.greenSoft : "transparent", border: `1px solid ${sizingBasis === "energy" ? C.green : C.line}` }}>
+                    <div style={{ fontSize: 11, color: C.dim, marginBottom: 2 }}>By kWh usage</div>
+                    <div className="mono" style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{fmt(r.sizeEnergy.kw, 1)} kW</div>
+                    <div className="mono" style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.75, marginTop: 3 }}>
+                      {r.sizeEnergy.panels} panels<br />{fmt(r.sizeEnergy.prod)} kWh/yr<br />{fmt(Math.min(r.sizeEnergy.offsetPct, 999))}% offset
+                    </div>
+                  </div>
+                  <div style={{ padding: 10, borderRadius: 8, background: sizingBasis === "power" ? C.tealSoft : "transparent", border: `1px solid ${sizingBasis === "power" ? C.teal : C.line}` }}>
+                    <div style={{ fontSize: 11, color: C.dim, marginBottom: 2 }}>By target watts</div>
+                    <div className="mono" style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{fmt(r.sizePower.kw, 1)} kW</div>
+                    <div className="mono" style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.75, marginTop: 3 }}>
+                      {r.sizePower.panels} panels<br />{fmt(r.sizePower.prod)} kWh/yr<br />{fmt(Math.min(r.sizePower.offsetPct, 999))}% offset
+                    </div>
+                  </div>
+                </div>
+                <div className="mono" style={{ fontSize: 11, color: C.dim, marginTop: 10, lineHeight: 1.85 }}>
+                  Δ {fmt(Math.abs(r.sizePower.kw - r.sizeEnergy.kw), 1)} kW · {r.sizePower.prod >= r.sizeEnergy.prod ? "+" : "−"}{fmt(Math.abs(r.sizePower.prod - r.sizeEnergy.prod))} kWh/yr between the two<br />
+                  <span style={{ color: C.text }}>Energy flow:</span> 1 kW × {sunHrs.toFixed(1)} sun-h × {fmt(invProd.derate * 100, 0)}% derate × 365 = {fmt(r.kwhPerKwYr)} kWh per kW·yr<br />
+                  {fmt(r.sizingUsage)} kWh/yr usage ÷ {fmt(r.kwhPerKwYr)} = {fmt(r.sizeEnergy.kw, 1)} kW to fully offset · this array {fmt(r.actualKw, 1)} kW → {fmt(r.newProd)} kWh/yr
+                </div>
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 5, flex: 1, alignContent: "start" }}>
@@ -629,10 +772,11 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 <div className="mono" style={{ fontSize: 12.5, lineHeight: 1.9 }}>
                   <span style={{ color: C.gold }}>▸ {r.nPanels} × {panelProd.mfr} {panelProd.name} ({panelW} W)</span> = {fmt(r.actualKw, 1)} kW new solar
                   {r.nPanels > 0 && <><br /><span style={{ color: C.gold }}>▸ {invProd.name}</span></>}
-                  {hasExisting && <><br /><span style={{ color: C.green }}>▸ {r.existPanels} panels existing</span> = {existKw.toFixed(1)} kW already on the roof</>}
+                  {hasExisting && <><br /><span style={{ color: C.green }}>▸ {r.existPanels} panels existing{existPanelProd ? ` × ${panelOptLabel(existPanelProd)}` : ""}</span> = {existKw.toFixed(1)} kW already on the roof</>}
+                  {hasExisting && existInvProd && <><br /><span style={{ color: C.green }}>▸ {existInvProd.name}</span> (existing inverter)</>}
                   {battMode !== "none" && (battMode === "new"
                     ? <><br /><span style={{ color: C.teal }}>▸ {battUnits} × {battProd.name}</span> = {r.battKwhEff.toFixed(1)} kWh / {(battUnits * battProd.unitKw).toFixed(1)} kW output (new)</>
-                    : <><br /><span style={{ color: C.teal }}>▸ {battKwh} kWh existing battery</span></>)}
+                    : <><br /><span style={{ color: C.teal }}>▸ {battKwh} kWh existing battery{existBattProd ? ` (${existBattProd.name})` : ""}</span></>)}
                   <br /><span style={{ color: C.dim }}>▸ Covers {fmt(Math.min(r.offsetPct, 999))}% of {fmt(r.sizingUsage)} kWh/yr{r.loadsFuture > 0 ? " (incl. future loads)" : ""}</span>
                 </div>
               </div>
