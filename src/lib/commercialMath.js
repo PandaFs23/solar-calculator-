@@ -10,6 +10,13 @@
 // Derate rule (same as residential): system derate = device efficiency × 0.88
 // environmental losses — invProd.derate already includes both. Never multiply
 // device efficiency in again.
+//
+// Advanced-tab optional overrides (backward-compatible; omitting preserves
+// the original behavior):
+//   monthlyUsageKwh, monthlyIrradiance, shadeFactor — same semantics as
+//     computeResidential.
+//   overrides — { degradation, taxCredit, panelSqft, rateEscalation,
+//                 exportRate }, each defaults to the constants module.
 import { MONTHS, SEASON, DAYS, SCALE_TOTAL, TAX_CREDIT, RATE_ESCALATION, DEGRADATION, EXPORT_RATE, PANEL_SQFT } from "../data/constants.js";
 import { COMMERCIAL_COST_TIERS } from "../data/commercialProducts.js";
 
@@ -30,13 +37,28 @@ export function computeCommercial({
   macrsOn, taxRate,                    // MACRS 5-yr toggle + combined tax rate (estimate)
   battMode, battUnits, battProd,       // demand-charge shaving
   shaveDepth,                          // fraction of peak the battery targets (est.)
+  // ---- Advanced-tab optional inputs ----
+  monthlyUsageKwh, monthlyIrradiance, shadeFactor, overrides,
 }) {
+  const K = {
+    degradation:    overrides?.degradation    ?? DEGRADATION,
+    taxCredit:      overrides?.taxCredit      ?? TAX_CREDIT,
+    panelSqft:      overrides?.panelSqft      ?? PANEL_SQFT,
+    rateEscalation: overrides?.rateEscalation ?? RATE_ESCALATION,
+    exportRate:     overrides?.exportRate     ?? EXPORT_RATE,
+  };
+
   const safeEnergyRate = Math.max(energyRate, 0.01);
 
   // ---- usage & billing decomposition ----
   const annualDemandCost = peakKw * demandRate * 12;
   let usageKwh;
-  if (inputMode === "kwh") {
+  const monthlyTotal = (monthlyUsageKwh?.length === 12)
+    ? monthlyUsageKwh.reduce((s, v) => s + (Number(v) || 0), 0)
+    : 0;
+  if (monthlyTotal > 0) {
+    usageKwh = monthlyTotal;
+  } else if (inputMode === "kwh") {
     usageKwh = annualKwh;
   } else {
     // monthly bill includes the demand line — back the energy portion out
@@ -54,14 +76,18 @@ export function computeCommercial({
   const autoPanels = Math.ceil((autoKw * 1000) / panelW);
   const nPanels = panels ?? autoPanels;
   const actualKw = (nPanels * panelW) / 1000;
-  const production = actualKw * sunHrs * invProd.derate * 365;
+  const shadeAvg = (shadeFactor?.length === 12)
+    ? Math.min(0.9, Math.max(0, shadeFactor.reduce((s, v) => s + (Number(v) || 0), 0) / 12))
+    : 0;
+  const productionIdeal = actualKw * sunHrs * invProd.derate * 365;
+  const production = productionIdeal * (1 - shadeAvg);
   const offsetPct = (production / usageKwh) * 100;
-  const roofArea = nPanels * PANEL_SQFT;
+  const roofArea = nPanels * K.panelSqft;
 
   // ---- solar energy savings: self-consumed at retail, surplus exported ----
   const selfUsedKwh = Math.min(production * selfConsumption, usageKwh);
   const exportedKwh = Math.max(production - selfUsedKwh, 0);
-  const solarSavings = selfUsedKwh * safeEnergyRate + exportedKwh * EXPORT_RATE;
+  const solarSavings = selfUsedKwh * safeEnergyRate + exportedKwh * K.exportRate;
 
   // ---- battery: demand-charge shaving (headline), not backup ----
   const hasBatt = battMode === "new";
@@ -79,10 +105,10 @@ export function computeCommercial({
   // ---- costs & incentives ----
   const costPerWatt = costPerWattOverride ?? tierCostPerWatt(actualKw);
   const grossCost = actualKw * 1000 * costPerWatt + battCost;
-  const itc = grossCost * TAX_CREDIT;
+  const itc = grossCost * K.taxCredit;
   // MACRS 5-yr: depreciable basis = cost − ½·ITC; benefit ≈ basis × tax rate.
   // Simplified to a single present-value-ish number — an ESTIMATE, not tax advice.
-  const macrsBasis = grossCost * (1 - TAX_CREDIT / 2);
+  const macrsBasis = grossCost * (1 - K.taxCredit / 2);
   const macrsBenefit = macrsOn ? macrsBasis * taxRate : 0;
   const netCost = grossCost - itc;
   const effectiveCost = netCost - macrsBenefit;
@@ -91,12 +117,21 @@ export function computeCommercial({
   const payback = annualSavings > 0 && effectiveCost > 0 ? effectiveCost / annualSavings : 0;
 
   // ---- monthly + 25-year projections ----
+  const irrTotal = (monthlyIrradiance?.length === 12)
+    ? monthlyIrradiance.reduce((s, v, i) => s + (Number(v) || 0) * DAYS[i], 0)
+    : 0;
   const monthly = MONTHS.map((m, i) => {
-    const scale = (DAYS[i] * SEASON[i]) / SCALE_TOTAL;
+    const seasonScale = (DAYS[i] * SEASON[i]) / SCALE_TOTAL;
+    const irrScale = irrTotal > 0 ? ((Number(monthlyIrradiance[i]) || 0) * DAYS[i]) / irrTotal : seasonScale;
+    const monthShade = (shadeFactor?.length === 12) ? Math.min(0.9, Math.max(0, Number(shadeFactor[i]) || 0)) : shadeAvg;
     return {
       month: m,
-      solar: Math.round(production * scale),
-      usage: Math.round((usageKwh / 12) * COM_USE_SEASON[i]),
+      solar: Math.round(productionIdeal * irrScale * (1 - monthShade)),
+      usage: Math.round(
+        (monthlyUsageKwh?.length === 12 && Number(monthlyUsageKwh[i]) > 0)
+          ? Number(monthlyUsageKwh[i])
+          : (usageKwh / 12) * COM_USE_SEASON[i]
+      ),
     };
   });
 
@@ -104,8 +139,8 @@ export function computeCommercial({
   const savings = [];
   for (let y = 0; y <= 25; y++) {
     if (y > 0) {
-      const esc = Math.pow(1 + RATE_ESCALATION, y - 1);
-      const deg = Math.pow(1 - DEGRADATION, y - 1);
+      const esc = Math.pow(1 + K.rateEscalation, y - 1);
+      const deg = Math.pow(1 - K.degradation, y - 1);
       cum += solarSavings * deg * esc + demandSavings * esc;
     }
     savings.push({ year: y, saved: Math.round(cum), cost: Math.round(effectiveCost) });
@@ -118,5 +153,6 @@ export function computeCommercial({
     battKwhEff, battKw, clippedKw, newPeakKw, demandSavings, battCost,
     costPerWatt, grossCost, itc, macrsBasis, macrsBenefit, netCost, effectiveCost,
     annualSavings, payback, monthly, savings, savings25: cum,
+    shadeAvg,
   };
 }

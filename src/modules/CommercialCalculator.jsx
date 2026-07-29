@@ -1,16 +1,19 @@
-import { useState, useMemo, useRef } from "react";
-import { Building2, Zap, DollarSign, Percent, TrendingUp, BatteryCharging, Loader2, MapPin, Gauge, Printer } from "lucide-react";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { Building2, Zap, DollarSign, Percent, TrendingUp, BatteryCharging, Loader2, MapPin, Gauge, Printer, Sliders, Trees, Home } from "lucide-react";
 import {
   ComposedChart, Bar, Line, Area, AreaChart, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, ReferenceLine,
 } from "recharts";
 
-import { C, RATE_ESCALATION, EXPORT_RATE } from "../data/constants.js";
+import { C, RATE_ESCALATION, EXPORT_RATE, TAX_CREDIT, DEGRADATION, PANEL_SQFT } from "../data/constants.js";
 import { STATES, UTILITIES, getSchedules } from "../data/utilities.js";
 import { COMMERCIAL_PANEL_PRODUCTS, COMMERCIAL_INVERTER_PRODUCTS, COMMERCIAL_COST_TIERS } from "../data/commercialProducts.js";
 import { BATTERY_PRODUCTS } from "../data/products.js";
 import { computeCommercial, tierCostPerWatt } from "../lib/commercialMath.js";
 import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility, fetchPropertyType } from "../lib/geo.js";
+import { shadeFactorForMonths } from "../lib/shading.js";
+import { checkFeasibility } from "../lib/feasibility.js";
+import useLocalStorage from "../hooks/useLocalStorage.js";
 import ModeSuggestionBanner from "../components/ModeSuggestionBanner.jsx";
 import AerialView from "../components/AerialView.jsx";
 import RegulationsPanel from "../components/RegulationsPanel.jsx";
@@ -19,6 +22,41 @@ import Field from "../components/Field.jsx";
 import NumInput from "../components/NumInput.jsx";
 import Slider from "../components/Slider.jsx";
 import Stat from "../components/Stat.jsx";
+import MonthlyUsageGrid from "../components/MonthlyUsageGrid.jsx";
+import ExistingSystemsPanel from "../components/ExistingSystemsPanel.jsx";
+import ShadingEditor from "../components/ShadingEditor.jsx";
+import IrradiancePanel from "../components/IrradiancePanel.jsx";
+import FeasibilityPanel from "../components/FeasibilityPanel.jsx";
+
+const COM_ADVANCED_DEFAULTS = {
+  degradation: DEGRADATION, taxCredit: TAX_CREDIT, panelSqft: PANEL_SQFT,
+  rateEscalation: RATE_ESCALATION, exportRate: EXPORT_RATE,
+};
+
+function SiteInput({ label, value, onChange }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span style={{ fontSize: 11, color: C.dim }}>{label}</span>
+      <input type="number" min={0} value={value || ""} placeholder="0"
+        onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+        style={{ background: C.slate, color: C.text, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", width: "100%", minWidth: 0, boxSizing: "border-box" }} />
+    </label>
+  );
+}
+function ConstInput({ label, value, step, min, max, decimals, onChange }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span style={{ fontSize: 11, color: C.dim }}>{label}</span>
+      <input type="number" step={step} min={min} max={max}
+        value={typeof value === "number" ? value.toFixed(decimals) : value}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (!isNaN(v)) onChange(Math.max(min, Math.min(max, v)));
+        }}
+        style={{ background: C.slate, color: C.text, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", width: "100%", minWidth: 0, boxSizing: "border-box" }} />
+    </label>
+  );
+}
 
 export default function CommercialCalculator({ onSwitchMode, onLocated, suppressedAddresses, suppressAddress }) {
   const [stateSel, setStateSel] = useState("CA");
@@ -52,6 +90,21 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
   // report + chart
   const [businessName, setBusinessName] = useState("");
   const [chartView, setChartView] = useState("monthly");
+
+  // ---- Advanced tab state ----
+  const [viewMode, setViewMode] = useState("basic");
+  const [monthlyUsageKwh, setMonthlyUsageKwh] = useState(Array(12).fill(0));
+  const [advOverrides, setAdvOverrides] = useState(COM_ADVANCED_DEFAULTS);
+  const [additionalSystems, setAdditionalSystems] = useLocalStorage("sc.com.systems.v1", []);
+  const [obstacles, setObstacles] = useState([]);
+  const [irradiance, setIrradiance] = useState(null);
+  const [useIrr, setUseIrr] = useState(false);
+  const [siteFeas, setSiteFeas] = useState({
+    availableRoofSqft: 0, roofPsfCapacity: 0,
+    mainBreakerAmps: 0, interconnectKw: 0,
+    panelWeightLb: 0,
+  });
+  const [feasibilityAck, setFeasibilityAck] = useState(false);
 
   // address lookup (shared with residential via lib/geo.js)
   const [address, setAddress] = useState("");
@@ -166,6 +219,15 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
     }
   };
 
+  // ---- Advanced-tab derived data ----
+  const shadeFactor = useMemo(() => {
+    if (viewMode !== "advanced" || !obstacles.length || !sitePos) return null;
+    return shadeFactorForMonths(sitePos.la, sitePos.lo, obstacles);
+  }, [viewMode, obstacles, sitePos]);
+  const activeMonthlyIrr = (viewMode === "advanced" && useIrr && irradiance?.monthly) ? irradiance.monthly : null;
+  const activeOverrides = viewMode === "advanced" ? advOverrides : undefined;
+  const activeMonthlyUsage = (viewMode === "advanced" && monthlyUsageKwh.some((v) => v > 0)) ? monthlyUsageKwh : null;
+
   const r = useMemo(() => computeCommercial({
     inputMode, annualKwh, monthlyBill,
     energyRate, peakKw, demandRate,
@@ -175,7 +237,28 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
     macrsOn, taxRate,
     battMode, battUnits, battProd,
     shaveDepth,
-  }), [inputMode, annualKwh, monthlyBill, energyRate, peakKw, demandRate, sunHrs, panels, panelW, invProd, selfCons, cpwOverride, macrsOn, taxRate, battMode, battUnits, battProd, shaveDepth]);
+    monthlyUsageKwh: activeMonthlyUsage,
+    monthlyIrradiance: activeMonthlyIrr,
+    shadeFactor,
+    overrides: activeOverrides,
+  }), [inputMode, annualKwh, monthlyBill, energyRate, peakKw, demandRate, sunHrs, panels, panelW, invProd, selfCons, cpwOverride, macrsOn, taxRate, battMode, battUnits, battProd, shaveDepth, activeMonthlyUsage, activeMonthlyIrr, shadeFactor, activeOverrides]);
+
+  // ---- Feasibility ----
+  const feasibility = useMemo(() => checkFeasibility({
+    nPanels: r.nPanels, actualKw: r.actualKw,
+    panel: panelProd, inverter: invProd,
+    battKwhEff: r.battKwhEff, dailyUsageKwh: r.usageKwh / 365,
+    invArch: "threephase",
+    availableRoofSqft: siteFeas.availableRoofSqft || null,
+    panelSqft: (activeOverrides?.panelSqft) ?? PANEL_SQFT,
+    panelWeightLb: siteFeas.panelWeightLb || null,
+    roofPsfCapacity: siteFeas.roofPsfCapacity || null,
+    interconnectKw: siteFeas.interconnectKw || null,
+    mainBreakerAmps: siteFeas.mainBreakerAmps || null,
+    serviceVoltage: 480, // commercial three-phase default
+  }), [r.nPanels, r.actualKw, r.battKwhEff, r.usageKwh, panelProd, invProd, siteFeas, activeOverrides]);
+
+  useEffect(() => { if (feasibility.summary.errors > 0) setFeasibilityAck(false); }, [feasibility.summary.errors]);
 
   const fmt = (n, d = 0) =>
     n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -197,7 +280,7 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
         </p>
 
         {/* save report bar */}
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
           <input type="text" value={businessName} placeholder="Business name (for the report)"
             onChange={(e) => setBusinessName(e.target.value)}
             style={{ flex: "1 1 220px", maxWidth: 320, background: C.slate, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "9px 12px", fontSize: 14, fontFamily: "inherit" }} />
@@ -210,6 +293,23 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
             <Printer size={16} /> Save PDF report
           </button>
           <span className="mono" style={{ fontSize: 11, color: C.dim }}>Opens the print dialog — choose "Save as PDF"</span>
+        </div>
+
+        {/* Basic / Advanced view pill */}
+        <div role="tablist" aria-label="Detail level" style={{ display: "inline-flex", gap: 3, padding: 3, border: `1px solid ${C.line}`, borderRadius: 999, background: C.slate, marginBottom: 20 }}>
+          {[["basic", "Basic", <Home size={13} key="hi" />], ["advanced", "Advanced", <Sliders size={13} key="si" />]].map(([m, label, ic]) => (
+            <button key={m} role="tab" aria-selected={viewMode === m} onClick={() => setViewMode(m)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 14px", fontSize: 12.5, fontFamily: "inherit", fontWeight: 600, cursor: "pointer",
+                background: viewMode === m ? C.goldSoft : "transparent",
+                color: viewMode === m ? C.gold : C.dim,
+                border: `1px solid ${viewMode === m ? C.gold : "transparent"}`,
+                borderRadius: 999,
+              }}>
+              {ic}{label}
+            </button>
+          ))}
         </div>
 
         <div style={{ display: "grid", gap: 24 }}>
@@ -567,6 +667,102 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
             </div>
           </div>
 
+          {/* ---- Advanced controls ---- */}
+          {viewMode === "advanced" && (
+            <div style={{ background: C.slate, border: `1px solid ${C.gold}44`, borderRadius: 14, padding: 24 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, justifyContent: "space-between", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Sliders size={16} color={C.gold} />
+                  <span className="mono" style={{ fontSize: 12, letterSpacing: 2, color: C.gold }}>ADVANCED PARAMETERS</span>
+                </div>
+                <button onClick={() => setAdvOverrides(COM_ADVANCED_DEFAULTS)}
+                  style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 6, padding: "5px 10px", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+                  Reset all to defaults
+                </button>
+              </div>
+              <p style={{ fontSize: 13, color: C.dim, margin: "0 0 16px", lineHeight: 1.6 }}>
+                Every calculation constant editable. All prices remain estimates until distributor pricing is loaded.
+              </p>
+
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>MONTHLY kWh USAGE (Jan–Dec)</div>
+                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
+                  When any value is &gt; 0 the sum becomes the annual energy usage. Leaving all zeros uses the Basic-tab input.
+                </p>
+                <MonthlyUsageGrid values={monthlyUsageKwh}
+                  onChange={setMonthlyUsageKwh}
+                  onFillEven={() => {
+                    const base = activeMonthlyUsage ? monthlyUsageKwh.reduce((s, v) => s + v, 0) : annualKwh;
+                    setMonthlyUsageKwh(Array(12).fill(Math.round(base / 12)));
+                  }}
+                  onClear={() => setMonthlyUsageKwh(Array(12).fill(0))} />
+              </div>
+
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>TRACKED FACILITIES (up to 5)</div>
+                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
+                  Multi-site portfolio tracking. Combined production sums across facilities. Persists per browser.
+                </p>
+                <ExistingSystemsPanel systems={additionalSystems} setSystems={setAdditionalSystems}
+                  aggregateKwh={additionalSystems.reduce((s, x) => s + ((Number(x.measuredKwh) > 0) ? Number(x.measuredKwh) : Number(x.ratedKw || 0) * sunHrs * 0.8 * 365), 0)} />
+              </div>
+
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>SITE IRRADIANCE (NASA POWER)</div>
+                <IrradiancePanel sitePos={sitePos}
+                  irradiance={irradiance} setIrradiance={setIrradiance}
+                  useIrr={useIrr} setUseIrr={setUseIrr} />
+              </div>
+
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <Trees size={14} color={C.dim} />
+                  <span className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim }}>SHADING OBSTACLES</span>
+                </div>
+                <ShadingEditor obstacles={obstacles} setObstacles={setObstacles}
+                  shadeFactor={shadeFactor || Array(12).fill(0)}
+                  hasLocation={!!sitePos} />
+              </div>
+
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>SITE-SPECIFIC INPUTS (feasibility)</div>
+                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
+                  <SiteInput label="Available roof (sq ft)" value={siteFeas.availableRoofSqft}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, availableRoofSqft: v })} />
+                  <SiteInput label="Roof capacity (psf)" value={siteFeas.roofPsfCapacity}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, roofPsfCapacity: v })} />
+                  <SiteInput label="Panel weight (lb ea.)" value={siteFeas.panelWeightLb}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, panelWeightLb: v })} />
+                  <SiteInput label="Service size (A)" value={siteFeas.mainBreakerAmps}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, mainBreakerAmps: v })} />
+                  <SiteInput label="Interconnect cap (kW)" value={siteFeas.interconnectKw}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, interconnectKw: v })} />
+                </div>
+              </div>
+
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>CALCULATION CONSTANTS</div>
+                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                  <ConstInput label="Federal ITC (%)" value={advOverrides.taxCredit * 100}
+                    step={1} min={0} max={50} decimals={0}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, taxCredit: v / 100 })} />
+                  <ConstInput label="Panel degradation (%/yr)" value={advOverrides.degradation * 100}
+                    step={0.1} min={0} max={2} decimals={2}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, degradation: v / 100 })} />
+                  <ConstInput label="Utility escalation (%/yr)" value={advOverrides.rateEscalation * 100}
+                    step={0.5} min={0} max={10} decimals={1}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, rateEscalation: v / 100 })} />
+                  <ConstInput label="Export rate ($/kWh)" value={advOverrides.exportRate}
+                    step={0.01} min={0} max={1} decimals={2}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, exportRate: v })} />
+                  <ConstInput label="Panel footprint (sqft)" value={advOverrides.panelSqft}
+                    step={1} min={10} max={40} decimals={0}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, panelSqft: v })} />
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ---- charts ---- */}
           <div style={{ background: C.slate, border: `1px solid ${C.line}`, borderRadius: 14, padding: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
@@ -639,6 +835,31 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
           <p style={{ color: C.dim, fontSize: 12.5, lineHeight: 1.6, margin: 0 }}>
             All numbers are estimates for a first conversation, not a quote. Commercial rate schedules and demand charges vary widely — pull the actual tariff (links above) and 12 months of bills with the demand line. Panel and inverter specs marked "placeholder — confirm" await the owner's product database; installed $/W uses size-tier estimates, not distributor pricing. MACRS depreciation is an estimate and not tax advice — model it with the business's CPA. Demand-shave results assume a ~3-hour peak window; guaranteeing a shave level requires 15-minute interval data.
           </p>
+
+          {/* ---- Feasibility panel ---- */}
+          <div style={{ background: C.slate, border: `1px solid ${feasibility.summary.errors > 0 ? C.copper : C.line}`, borderRadius: 14, padding: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <Gauge size={16} color={feasibility.summary.errors > 0 ? C.copper : C.green} />
+              <span className="mono" style={{ fontSize: 12, letterSpacing: 2, color: C.dim }}>BUILD FEASIBILITY</span>
+            </div>
+            <p style={{ fontSize: 13, color: C.dim, margin: "0 0 16px", lineHeight: 1.6 }}>
+              Site-specific rules (roof area, service size, interconnect cap) fire only when their inputs are supplied in the Advanced tab.
+            </p>
+            <FeasibilityPanel result={feasibility} />
+            {feasibility.summary.errors > 0 && (
+              <div style={{ marginTop: 14, padding: "10px 14px", background: "#3B1E1233", border: `1px solid ${C.copper}`, borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span className="mono" style={{ fontSize: 12, color: C.copper }}>
+                  Blockers present — proposal is not build-ready until they are resolved{feasibilityAck ? " (acknowledged for this session)" : ""}.
+                </span>
+                {!feasibilityAck && (
+                  <button onClick={() => setFeasibilityAck(true)}
+                    style={{ background: "transparent", border: `1px solid ${C.copper}`, color: C.copper, borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                    Acknowledge and continue
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

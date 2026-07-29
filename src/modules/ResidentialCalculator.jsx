@@ -1,18 +1,21 @@
-import { useState, useMemo, useRef } from "react";
-import { Sun, Zap, DollarSign, Percent, TrendingUp, PlusCircle, BatteryCharging, Loader2, MapPin, Plug, ShieldCheck, Printer } from "lucide-react";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { Sun, Zap, DollarSign, Percent, TrendingUp, PlusCircle, BatteryCharging, Loader2, MapPin, Plug, ShieldCheck, Printer, Sliders, Gauge, Trees, Home } from "lucide-react";
 import {
   ComposedChart, Bar, Line, Area, AreaChart, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, ReferenceLine,
 } from "recharts";
 
 
-import { C, TAX_CREDIT, RATE_ESCALATION, EXPORT_RATE, BATT_EFF, EV_MI_PER_KWH } from "../data/constants.js";
+import { C, TAX_CREDIT, RATE_ESCALATION, EXPORT_RATE, BATT_EFF, EV_MI_PER_KWH, COST_PER_WATT, DEGRADATION, PANEL_SQFT, SOLAR_HOUR_SHARE, BATT_UTIL } from "../data/constants.js";
 import { STATES, STATE_CODES, UTILITIES, INVERTERS, getSchedules } from "../data/utilities.js";
 import { PANEL_PRODUCTS, LEGACY_PANEL_PRODUCTS, DISCONTINUED_PANEL_PRODUCTS, ALL_PANEL_PRODUCTS, INVERTER_PRODUCTS, LEGACY_INVERTER_PRODUCTS, DISCONTINUED_INVERTER_PRODUCTS, ALL_INVERTER_PRODUCTS, BATTERY_PRODUCTS, LEGACY_BATTERY_PRODUCTS, DISCONTINUED_BATTERY_PRODUCTS, ALL_BATTERY_PRODUCTS } from "../data/products.js";
 import { APPLIANCES } from "../data/appliances.js";
 import { SYS_CONFIGS } from "../data/configs.js";
 import { computeResidential } from "../lib/solarMath.js";
 import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility, fetchPropertyType } from "../lib/geo.js";
+import { shadeFactorForMonths } from "../lib/shading.js";
+import { checkFeasibility } from "../lib/feasibility.js";
+import useLocalStorage from "../hooks/useLocalStorage.js";
 import ModeSuggestionBanner from "../components/ModeSuggestionBanner.jsx";
 import AerialView from "../components/AerialView.jsx";
 import RegulationsPanel from "../components/RegulationsPanel.jsx";
@@ -23,6 +26,43 @@ import NumInput from "../components/NumInput.jsx";
 import Slider from "../components/Slider.jsx";
 import Stat from "../components/Stat.jsx";
 import Section from "../components/Section.jsx";
+import MonthlyUsageGrid from "../components/MonthlyUsageGrid.jsx";
+import ExistingSystemsPanel from "../components/ExistingSystemsPanel.jsx";
+import ShadingEditor from "../components/ShadingEditor.jsx";
+import IrradiancePanel from "../components/IrradiancePanel.jsx";
+import FeasibilityPanel from "../components/FeasibilityPanel.jsx";
+
+const ADVANCED_DEFAULTS = {
+  degradation: DEGRADATION, costPerWatt: COST_PER_WATT, taxCredit: TAX_CREDIT,
+  panelSqft: PANEL_SQFT, rateEscalation: RATE_ESCALATION, exportRate: EXPORT_RATE,
+  battEff: BATT_EFF, battUtil: BATT_UTIL, solarHourShare: SOLAR_HOUR_SHARE,
+};
+
+// Compact number-with-label input for the advanced-only site inputs.
+function SiteInput({ label, value, onChange }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span style={{ fontSize: 11, color: C.dim }}>{label}</span>
+      <input type="number" min={0} value={value || ""} placeholder="0"
+        onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+        style={{ background: C.slate, color: C.text, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", width: "100%", minWidth: 0, boxSizing: "border-box" }} />
+    </label>
+  );
+}
+function ConstInput({ label, value, step, min, max, decimals, onChange }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span style={{ fontSize: 11, color: C.dim }}>{label}</span>
+      <input type="number" step={step} min={min} max={max}
+        value={typeof value === "number" ? value.toFixed(decimals) : value}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (!isNaN(v)) onChange(Math.max(min, Math.min(max, v)));
+        }}
+        style={{ background: C.slate, color: C.text, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", width: "100%", minWidth: 0, boxSizing: "border-box" }} />
+    </label>
+  );
+}
 
 export default function ResidentialCalculator({ onSwitchMode, onLocated, suppressedAddresses, suppressAddress }) {
   const [stateSel, setStateSel] = useState("CA");
@@ -61,6 +101,22 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
 
   // report
   const [customerName, setCustomerName] = useState("");
+
+  // ---- Advanced tab state ----
+  const [viewMode, setViewMode] = useState("basic"); // 'basic' | 'advanced'
+  const [monthlyUsageKwh, setMonthlyUsageKwh] = useState(Array(12).fill(0));
+  const [advOverrides, setAdvOverrides] = useState(ADVANCED_DEFAULTS);
+  // multi-system tracker persists per browser
+  const [additionalSystems, setAdditionalSystems] = useLocalStorage("sc.res.systems.v1", []);
+  const [obstacles, setObstacles] = useState([]);
+  const [irradiance, setIrradiance] = useState(null); // NASA POWER record
+  const [useIrr, setUseIrr] = useState(false);
+  const [siteFeas, setSiteFeas] = useState({
+    availableRoofSqft: 0, roofPsfCapacity: 0,
+    mainBreakerAmps: 0, interconnectKw: 0,
+    panelWeightLb: 0,
+  });
+  const [feasibilityAck, setFeasibilityAck] = useState(false); // warnings ack toggle
 
   // address lookup
   const [address, setAddress] = useState("");
@@ -240,13 +296,51 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   };
 
 
+  // ---- Advanced-tab derived data ----
+  // Shade factor: (re)computed only when obstacles or latitude change.
+  const shadeFactor = useMemo(() => {
+    if (viewMode !== "advanced" || !obstacles.length || !sitePos) return null;
+    return shadeFactorForMonths(sitePos.la, sitePos.lo, obstacles);
+  }, [viewMode, obstacles, sitePos]);
+
+  // Monthly irradiance override — only active when the user opts in
+  const activeMonthlyIrr = (viewMode === "advanced" && useIrr && irradiance?.monthly) ? irradiance.monthly : null;
+  // Advanced overrides are only applied in advanced mode; basic view preserves the CLAUDE.md regression
+  const activeOverrides = viewMode === "advanced" ? advOverrides : undefined;
+  const activeMonthlyUsage = (viewMode === "advanced" && monthlyUsageKwh.some((v) => v > 0)) ? monthlyUsageKwh : null;
+  const activeAddSystems = viewMode === "advanced" ? additionalSystems : null;
+
   const r = useMemo(() => computeResidential({
     rate, inputMode, annualKwh, bill,
     loads, loadVals, evMiles,
     hasExisting, existKw, existAge, existProdOverride, inverter: existInverter, existPanelW,
     sunHrs, panels, panelW, invProd, sizingBasis, targetKw,
     battMode, battUnits, battProd, battKwh,
-  }), [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, existKw, existType, existAge, existProdOverride, existInverter, existPanelW, sizingBasis, targetKw, battMode, battKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits]);
+    monthlyUsageKwh: activeMonthlyUsage,
+    monthlyIrradiance: activeMonthlyIrr,
+    shadeFactor,
+    additionalSystems: activeAddSystems,
+    overrides: activeOverrides,
+  }), [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, existKw, existType, existAge, existProdOverride, existInverter, existPanelW, sizingBasis, targetKw, battMode, battKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits, activeMonthlyUsage, activeMonthlyIrr, shadeFactor, activeAddSystems, activeOverrides]);
+
+  // ---- Feasibility check (advanced view) ----
+  const invArch = existType === "micro" ? "micro" : "string";
+  const feasibility = useMemo(() => checkFeasibility({
+    nPanels: r.nPanels, actualKw: r.actualKw,
+    panel: panelProd, inverter: invProd,
+    battKwhEff: r.battKwhEff, dailyUsageKwh: r.sizingUsage / 365,
+    invArch,
+    availableRoofSqft: siteFeas.availableRoofSqft || null,
+    panelSqft: (activeOverrides?.panelSqft) ?? PANEL_SQFT,
+    panelWeightLb: siteFeas.panelWeightLb || null,
+    roofPsfCapacity: siteFeas.roofPsfCapacity || null,
+    interconnectKw: siteFeas.interconnectKw || null,
+    mainBreakerAmps: siteFeas.mainBreakerAmps || null,
+    serviceVoltage: 240,
+  }), [r.nPanels, r.actualKw, r.battKwhEff, r.sizingUsage, panelProd, invProd, invArch, siteFeas, activeOverrides]);
+
+  // When the design changes and produces new blockers, clear the acknowledgment
+  useEffect(() => { if (feasibility.summary.errors > 0) setFeasibilityAck(false); }, [feasibility.summary.errors]);
 
   const fmt = (n, d = 0) =>
     n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -268,7 +362,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
         </p>
 
         {/* save report bar */}
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
           <input type="text" value={customerName} placeholder="Customer name (for the report)"
             onChange={(e) => setCustomerName(e.target.value)}
             style={{ flex: "1 1 220px", maxWidth: 320, background: C.slate, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "9px 12px", fontSize: 14, fontFamily: "inherit" }} />
@@ -281,6 +375,23 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
             <Printer size={16} /> Save PDF report
           </button>
           <span className="mono" style={{ fontSize: 11, color: C.dim }}>Opens the print dialog — choose "Save as PDF"</span>
+        </div>
+
+        {/* Basic / Advanced view pill */}
+        <div role="tablist" aria-label="Detail level" style={{ display: "inline-flex", gap: 3, padding: 3, border: `1px solid ${C.line}`, borderRadius: 999, background: C.slate, marginBottom: 20 }}>
+          {[["basic", "Basic", <Home size={13} key="hi" />], ["advanced", "Advanced", <Sliders size={13} key="si" />]].map(([m, label, ic]) => (
+            <button key={m} role="tab" aria-selected={viewMode === m} onClick={() => setViewMode(m)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 14px", fontSize: 12.5, fontFamily: "inherit", fontWeight: 600, cursor: "pointer",
+                background: viewMode === m ? C.goldSoft : "transparent",
+                color: viewMode === m ? C.gold : C.dim,
+                border: `1px solid ${viewMode === m ? C.gold : "transparent"}`,
+                borderRadius: 999,
+              }}>
+              {ic}{label}
+            </button>
+          ))}
         </div>
 
         <div style={{ display: "grid", gap: 24 }}>
@@ -785,6 +896,141 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
             </div>
           </div>
 
+          {/* ---- Advanced controls (Feature 1: every parameter editable) ---- */}
+          {viewMode === "advanced" && (
+            <div style={{ background: C.slate, border: `1px solid ${C.gold}44`, borderRadius: 14, padding: 24 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, justifyContent: "space-between", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Sliders size={16} color={C.gold} />
+                  <span className="mono" style={{ fontSize: 12, letterSpacing: 2, color: C.gold }}>ADVANCED PARAMETERS</span>
+                </div>
+                <button onClick={() => setAdvOverrides(ADVANCED_DEFAULTS)}
+                  style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 6, padding: "5px 10px", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+                  Reset all to defaults
+                </button>
+              </div>
+              <p style={{ fontSize: 13, color: C.dim, margin: "0 0 16px", lineHeight: 1.6 }}>
+                Every calculation constant editable. Changes take effect immediately and update all downstream numbers. Prices remain estimates — replace with distributor pricing before quoting.
+              </p>
+
+              {/* Feature 3: monthly usage grid */}
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>MONTHLY kWh USAGE (Jan–Dec)</div>
+                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
+                  Enter measured monthly consumption from 12 utility bills. When any value is &gt; 0 the sum becomes the annual usage and monthly usage in the chart uses these directly. Leave all zeros to use the Basic-tab input.
+                </p>
+                <MonthlyUsageGrid values={monthlyUsageKwh}
+                  onChange={setMonthlyUsageKwh}
+                  onFillEven={() => {
+                    const base = (activeMonthlyUsage ? monthlyUsageKwh.reduce((s, v) => s + v, 0) : (inputMode === "kwh" ? annualKwh : (bill / Math.max(rate, 0.01)) * 12)) || annualKwh;
+                    setMonthlyUsageKwh(Array(12).fill(Math.round(base / 12)));
+                  }}
+                  onClear={() => setMonthlyUsageKwh(Array(12).fill(0))} />
+              </div>
+
+              {/* Feature 2: existing systems tracker */}
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>TRACKED EXISTING SYSTEMS (up to 5)</div>
+                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
+                  Additional installed systems beyond the primary "Home has existing solar" toggle. Their production sums into the aggregate existing offset. Saved in this browser.
+                </p>
+                <ExistingSystemsPanel systems={additionalSystems} setSystems={setAdditionalSystems}
+                  aggregateKwh={(() => {
+                    let total = 0;
+                    additionalSystems.forEach((s) => {
+                      const derate = 0.8; // uses default DERATE if unspecified
+                      const eff = derate * Math.pow(1 - (advOverrides.degradation ?? DEGRADATION), Math.max(0, new Date().getFullYear() - Number(s.installedYear || 0)));
+                      const prod = (Number(s.measuredKwh) > 0) ? Number(s.measuredKwh) : Number(s.ratedKw || 0) * sunHrs * eff * 365;
+                      total += prod;
+                    });
+                    return total;
+                  })()} />
+              </div>
+
+              {/* Feature 6: NASA POWER irradiance */}
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>SITE IRRADIANCE (NASA POWER)</div>
+                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
+                  Free, keyless monthly GHI from NASA's POWER climatology. Applying the data replaces the seasonal default distribution with measurements for this exact location.
+                </p>
+                <IrradiancePanel sitePos={sitePos}
+                  irradiance={irradiance} setIrradiance={setIrradiance}
+                  useIrr={useIrr} setUseIrr={setUseIrr} />
+              </div>
+
+              {/* Feature 5: shading obstacles */}
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <Trees size={14} color={C.dim} />
+                  <span className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim }}>SHADING OBSTACLES</span>
+                </div>
+                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
+                  Add trees, buildings, and chimneys with height and direction from the array. A monthly shade-loss factor computes via sun-position math (NOAA algorithm) and reduces new-system production accordingly.
+                </p>
+                <ShadingEditor obstacles={obstacles} setObstacles={setObstacles}
+                  shadeFactor={shadeFactor || Array(12).fill(0)}
+                  hasLocation={!!sitePos} />
+              </div>
+
+              {/* Site inputs for feasibility (Feature 4) */}
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>SITE-SPECIFIC INPUTS (feasibility)</div>
+                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
+                  Optional inputs that unlock additional feasibility checks below. Leave 0 to skip that check.
+                </p>
+                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
+                  <SiteInput label="Available roof (sq ft)" value={siteFeas.availableRoofSqft}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, availableRoofSqft: v })} />
+                  <SiteInput label="Roof capacity (psf)" value={siteFeas.roofPsfCapacity}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, roofPsfCapacity: v })} />
+                  <SiteInput label="Panel weight (lb ea.)" value={siteFeas.panelWeightLb}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, panelWeightLb: v })} />
+                  <SiteInput label="Main breaker (A)" value={siteFeas.mainBreakerAmps}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, mainBreakerAmps: v })} />
+                  <SiteInput label="Interconnect cap (kW)" value={siteFeas.interconnectKw}
+                    onChange={(v) => setSiteFeas({ ...siteFeas, interconnectKw: v })} />
+                </div>
+              </div>
+
+              {/* Feature 1 (continued): calc constants */}
+              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10 }}>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>CALCULATION CONSTANTS</div>
+                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                  <ConstInput label="Cost per watt ($/W)" value={advOverrides.costPerWatt}
+                    step={0.05} min={0.5} max={6} decimals={2}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, costPerWatt: v })} />
+                  <ConstInput label="Federal ITC (%)" value={advOverrides.taxCredit * 100}
+                    step={1} min={0} max={50} decimals={0}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, taxCredit: v / 100 })} />
+                  <ConstInput label="Panel degradation (%/yr)" value={advOverrides.degradation * 100}
+                    step={0.1} min={0} max={2} decimals={2}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, degradation: v / 100 })} />
+                  <ConstInput label="Utility escalation (%/yr)" value={advOverrides.rateEscalation * 100}
+                    step={0.5} min={0} max={10} decimals={1}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, rateEscalation: v / 100 })} />
+                  <ConstInput label="Export rate ($/kWh)" value={advOverrides.exportRate}
+                    step={0.01} min={0} max={1} decimals={2}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, exportRate: v })} />
+                  <ConstInput label="Panel footprint (sqft)" value={advOverrides.panelSqft}
+                    step={1} min={10} max={40} decimals={0}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, panelSqft: v })} />
+                  <ConstInput label="Battery round-trip (%)" value={advOverrides.battEff * 100}
+                    step={1} min={70} max={99} decimals={0}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, battEff: v / 100 })} />
+                  <ConstInput label="Battery daily cycles (%)" value={advOverrides.battUtil * 100}
+                    step={5} min={20} max={100} decimals={0}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, battUtil: v / 100 })} />
+                  <ConstInput label="Solar-hour usage share (%)" value={advOverrides.solarHourShare * 100}
+                    step={5} min={10} max={90} decimals={0}
+                    onChange={(v) => setAdvOverrides({ ...advOverrides, solarHourShare: v / 100 })} />
+                </div>
+                <div className="mono" style={{ fontSize: 11, color: C.dim, marginTop: 10, lineHeight: 1.7 }}>
+                  Defaults match the constants in <code>src/data/constants.js</code>. Deviating from them here changes THIS session's math only — the file's defaults are the CLAUDE.md verified regression baseline.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ---- system configuration ---- */}
           <div style={{ background: C.slate, border: `1px solid ${C.line}`, borderRadius: 14, padding: 24 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
@@ -1008,6 +1254,31 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
           <p style={{ color: C.dim, fontSize: 12.5, lineHeight: 1.6, margin: 0 }}>
             Battery value assumes NEM 3.0-style economics: surplus exported to the grid earns ~${EXPORT_RATE.toFixed(2)}/kWh, so storing it and using it in the evening at the retail rate is where batteries pay off ({Math.round(BATT_EFF * 100)}% round-trip efficiency; unit prices from the product catalog, ITC-eligible). Panel, inverter, and battery specs (watts, efficiency, warranty, output) come from your product database (v17e, current products only). Prices are NOT in that database, so costs use editable estimates ($2.75/W solar, ~$1,000/kWh battery) — replace with distributor pricing before quoting. Existing-system estimates use inverter-specific efficiency and 0.5%/yr degradation — actual monitoring data beats estimates every time. AI-extracted bill data should be reviewed before quoting. A site survey will refine everything.
           </p>
+
+          {/* ---- Feature 4: Feasibility panel (always visible; site-specific rules only fire when the Advanced-tab inputs are filled) ---- */}
+          <div style={{ background: C.slate, border: `1px solid ${feasibility.summary.errors > 0 ? C.copper : C.line}`, borderRadius: 14, padding: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <Gauge size={16} color={feasibility.summary.errors > 0 ? C.copper : C.green} />
+              <span className="mono" style={{ fontSize: 12, letterSpacing: 2, color: C.dim }}>BUILD FEASIBILITY</span>
+            </div>
+            <p style={{ fontSize: 13, color: C.dim, margin: "0 0 16px", lineHeight: 1.6 }}>
+              A sanity screen for common site-design mistakes. Site-specific rules (roof area, service size, interconnect cap) fire only when their inputs are supplied in the Advanced tab.
+            </p>
+            <FeasibilityPanel result={feasibility} />
+            {feasibility.summary.errors > 0 && (
+              <div style={{ marginTop: 14, padding: "10px 14px", background: "#3B1E1233", border: `1px solid ${C.copper}`, borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span className="mono" style={{ fontSize: 12, color: C.copper }}>
+                  Blockers present — proposal is not build-ready until they are resolved{feasibilityAck ? " (acknowledged for this session)" : ""}.
+                </span>
+                {!feasibilityAck && (
+                  <button onClick={() => setFeasibilityAck(true)}
+                    style={{ background: "transparent", border: `1px solid ${C.copper}`, color: C.copper, borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                    Acknowledge and continue
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
