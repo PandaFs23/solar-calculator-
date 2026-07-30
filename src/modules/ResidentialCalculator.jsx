@@ -13,6 +13,7 @@ import { APPLIANCES } from "../data/appliances.js";
 import { SYS_CONFIGS } from "../data/configs.js";
 import { computeResidential } from "../lib/solarMath.js";
 import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility, fetchPropertyType } from "../lib/geo.js";
+import { fetchMonthlyGHI } from "../lib/nasaPower.js";
 import { shadeFactorForMonths } from "../lib/shading.js";
 import { checkFeasibility } from "../lib/feasibility.js";
 import useLocalStorage from "../hooks/useLocalStorage.js";
@@ -109,8 +110,14 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   // multi-system tracker persists per browser
   const [additionalSystems, setAdditionalSystems] = useLocalStorage("sc.res.systems.v1", []);
   const [obstacles, setObstacles] = useState([]);
+  // ---- Irradiance engine (Phase 6) ----
+  // NASA POWER climatology is the DEFAULT basis, on in both tabs. Basic never
+  // renders a control for it — it just quietly powers the numbers once an
+  // address is located. Advanced exposes the switch (still default-on) so a
+  // rep can drop back to the regional average deliberately.
   const [irradiance, setIrradiance] = useState(null); // NASA POWER record
-  const [useIrr, setUseIrr] = useState(false);
+  const [useIrr, setUseIrr] = useState(true);
+  const [irrStatus, setIrrStatus] = useState("idle"); // idle | loading | ok | failed
   const [siteFeas, setSiteFeas] = useState({
     availableRoofSqft: 0, roofPsfCapacity: 0,
     mainBreakerAmps: 0, interconnectKw: 0,
@@ -267,6 +274,19 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
     fetchPropertyType(la, lo)
       .then((pt) => setPropType({ ...pt, addr: shortName }))
       .catch((err) => console.warn("Property type lookup failed:", err));
+
+    // Irradiance: fire-and-forget alongside the rest. A failure or timeout
+    // silently leaves the model on its existing peak-sun-hours value — never
+    // block the calculation or surface a customer-facing error.
+    setIrradiance(null);
+    setIrrStatus("loading");
+    fetchMonthlyGHI(la, lo)
+      .then((data) => { setIrradiance(data); setIrrStatus("ok"); })
+      .catch((err) => {
+        console.warn("NASA POWER fetch failed — staying on regional average:", err);
+        setIrrStatus("failed");
+      });
+
     try {
       const { psh, yr } = await fetchPeakSunHours(la, lo);
       setSunHrs(Math.round(psh * 10) / 10);
@@ -303,8 +323,10 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
     return shadeFactorForMonths(sitePos.la, sitePos.lo, obstacles);
   }, [viewMode, obstacles, sitePos]);
 
-  // Monthly irradiance override — only active when the user opts in
-  const activeMonthlyIrr = (viewMode === "advanced" && useIrr && irradiance?.monthly) ? irradiance.monthly : null;
+  // Monthly irradiance basis — deliberately NOT gated on viewMode: NASA is the
+  // default basis in Basic too (invisible there), and Advanced's switch is the
+  // only way to turn it off.
+  const activeMonthlyIrr = (useIrr && irradiance?.monthly) ? irradiance.monthly : null;
   // Advanced overrides are only applied in advanced mode; basic view preserves the CLAUDE.md regression
   const activeOverrides = viewMode === "advanced" ? advOverrides : undefined;
   const activeMonthlyUsage = (viewMode === "advanced" && monthlyUsageKwh.some((v) => v > 0)) ? monthlyUsageKwh : null;
@@ -474,8 +496,19 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                     <option key={u.id} value={u.id}>{u.name} — {u.region}</option>
                   ))}
                 </select>
-                <div className="mono" style={{ fontSize: 11.5, color: C.dim, marginTop: 8 }}>
-                  est. ${rate.toFixed(2)}/kWh · {sunHrs} sun hrs/day{geoState === "done" ? " (measured at this address)" : " (regional default — use the address lookup for measured data)"}
+                <div className="mono" style={{ fontSize: 11.5, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
+                  est. ${rate.toFixed(2)}/kWh · {r.effectiveSunHrs.toFixed(1)} sun hrs/day
+                  <br />
+                  Irradiance:{" "}
+                  {r.irradianceBasis === "nasa" ? (
+                    <span style={{ color: C.green }}>NASA POWER climatology</span>
+                  ) : (
+                    <span style={{ color: C.dim }}>
+                      regional average
+                      {irrStatus === "failed" && " (NASA data unavailable)"}
+                      {irrStatus === "loading" && " (fetching NASA data…)"}
+                    </span>
+                  )}
                 </div>
               </Field>
 
@@ -951,11 +984,16 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
               <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
                 <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>SITE IRRADIANCE (NASA POWER)</div>
                 <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
-                  Free, keyless monthly GHI from NASA's POWER climatology. Applying the data replaces the seasonal default distribution with measurements for this exact location.
+                  Free, keyless monthly irradiance from NASA's POWER climatology, fetched automatically
+                  when an address is located and used <strong style={{ color: C.text }}>by default</strong>.
+                  It sets the peak-sun-hours basis for both the annual total and the month-by-month split.
+                  Turning it off falls back to the utility's regional average. This replaces the sun-hours
+                  assumption only — the system derate is a separate loss stage and does not change.
                 </p>
                 <IrradiancePanel sitePos={sitePos}
                   irradiance={irradiance} setIrradiance={setIrradiance}
-                  useIrr={useIrr} setUseIrr={setUseIrr} />
+                  useIrr={useIrr} setUseIrr={setUseIrr}
+                  status={irrStatus} setStatus={setIrrStatus} />
               </div>
 
               {/* Feature 5: shading obstacles */}

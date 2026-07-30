@@ -10,10 +10,17 @@
 //                       provided (and > 0), its sum is the annualUsage and
 //                       monthly.usage uses these directly instead of the
 //                       USE_SEASON heuristic.
-//   monthlyIrradiance:  number[12] of kWh/m²/day per month. When provided,
-//                       monthly production distributes by this profile
-//                       (using DAYS to scale) instead of SEASON; annual
-//                       production remains actualKw × sunHrs × derate × 365.
+//   monthlyIrradiance:  number[12] of kWh/m²/day per month (NASA POWER
+//                       ALLSKY_SFC_SW_DWN). When provided it becomes the
+//                       irradiance basis for BOTH the annual total and the
+//                       monthly distribution, replacing the flat `sunHrs`
+//                       assumption:
+//                         monthly_kWh = kW_DC × PSH[m] × DAYS[m] × derate
+//                         annual_kWh  = kW_DC × Σ(PSH[m] × DAYS[m]) × derate
+//                       IRRADIANCE IS NOT DERATE. This replaces the peak-sun-
+//                       hours assumption only; `derate` (device efficiency ×
+//                       0.88 environmental) is untouched and still applied
+//                       exactly once. Never fold one into the other.
 //   shadeFactor:        number[12] shade LOSS ratio 0..1 per month. Reduces
 //                       monthly newProd; annual newProd rescales to the
 //                       shade-weighted sum.
@@ -52,6 +59,22 @@ export function computeResidential({
 
   const safeRate = Math.max(rate, 0.01);
 
+  // ---- irradiance basis ------------------------------------------------
+  // `pshDaysYr` is the year's total peak-sun-hours (sum of PSH/day × days).
+  // It is the ONLY place the irradiance assumption enters the model, so
+  // swapping in NASA POWER's measured monthly profile can't accidentally
+  // touch the derate. With no NASA data this is exactly the old
+  // `sunHrs × 365`, which is what keeps the CLAUDE.md regression fixed.
+  const hasIrr = monthlyIrradiance?.length === 12
+    && monthlyIrradiance.every((v) => Number(v) > 0);
+  const irrTotal = hasIrr
+    ? monthlyIrradiance.reduce((s, v, i) => s + Number(v) * DAYS[i], 0)
+    : 0;
+  const pshDaysYr = hasIrr ? irrTotal : sunHrs * 365;
+  // Flat-equivalent PSH/day, for display next to the regional default.
+  const effectiveSunHrs = pshDaysYr / 365;
+  const irradianceBasis = hasIrr ? "nasa" : "regional";
+
   // household loads (respecting custom value overrides)
   const loadKwh = (a) => getKwhYr(a);
   let loadsNow = 0, loadsFuture = 0;
@@ -82,7 +105,7 @@ export function computeResidential({
   let existPanels = 0;
   if (hasExisting) {
     const eff = inverter.derate * Math.pow(1 - K.degradation, existAge);
-    existProd = existProdOverride ?? existKw * sunHrs * eff * 365;
+    existProd = existProdOverride ?? existKw * pshDaysYr * eff;
     existPanels = Math.round((existKw * 1000) / (existPanelW || panelW));
   }
   if (additionalSystems?.length) {
@@ -91,7 +114,7 @@ export function computeResidential({
       const eff = derate * Math.pow(1 - K.degradation, s.age || 0);
       const prod = (s.measuredKwh != null && s.measuredKwh > 0)
         ? Number(s.measuredKwh)
-        : Number(s.ratedKw || 0) * sunHrs * eff * 365;
+        : Number(s.ratedKw || 0) * pshDaysYr * eff;
       existProd += prod;
       if (s.panelCount) existPanels += Math.round(Number(s.panelCount));
     });
@@ -100,8 +123,9 @@ export function computeResidential({
 
   // new system covers the remainder (incl. future loads)
   const remainingKwh = Math.max(sizingUsage - existProd, 0);
-  // kWh produced per installed kW per year — the conversion at the heart of both sizing bases
-  const kwhPerKwYr = sunHrs * invProd.derate * 365;
+  // kWh produced per installed kW per year — the conversion at the heart of
+  // both sizing bases. derate applied once, on top of the irradiance basis.
+  const kwhPerKwYr = pshDaysYr * invProd.derate;
   // ENERGY basis: size the array to the kW that covers the remaining usage
   const autoKw = kwhPerKwYr > 0 ? remainingKwh / kwhPerKwYr : 0;
   const autoPanels = Math.ceil((autoKw * 1000) / panelW);
@@ -117,7 +141,7 @@ export function computeResidential({
   const shadeAvg = (shadeFactor?.length === 12)
     ? Math.min(0.9, Math.max(0, shadeFactor.reduce((s, v) => s + (Number(v) || 0), 0) / 12))
     : 0;
-  const newProdIdeal = actualKw * sunHrs * invProd.derate * 365;
+  const newProdIdeal = actualKw * pshDaysYr * invProd.derate;
   const newProd = newProdIdeal * (1 - shadeAvg);
   const newOffsetPct = (newProd / sizingUsage) * 100;
   const combinedProd = existProd + newProd;
@@ -163,14 +187,14 @@ export function computeResidential({
 
   // monthly production/usage distribution — advanced overrides fall back to
   // SEASON/USE_SEASON when not provided, preserving the original behavior
-  const irrTotal = (monthlyIrradiance?.length === 12)
-    ? monthlyIrradiance.reduce((s, v, i) => s + (Number(v) || 0) * DAYS[i], 0)
-    : 0;
   const monthly = MONTHS.map((m, i) => {
-    // solar distribution: SEASON by default; when monthly irradiance is
-    // provided, redistribute so annual sum matches newProd/existProd
+    // Solar distribution: SEASON by default. With NASA irradiance the scale is
+    // (PSH[i] × DAYS[i]) / Σ(PSH × DAYS), and since newProdIdeal is already
+    // actualKw × Σ(PSH × DAYS) × derate, the product reduces to exactly
+    //   actualKw × PSH[i] × DAYS[i] × derate
+    // — the honest-data formula, with derate appearing once.
     const seasonScale = (DAYS[i] * SEASON[i]) / SCALE_TOTAL;
-    const irrScale = irrTotal > 0 ? ((Number(monthlyIrradiance[i]) || 0) * DAYS[i]) / irrTotal : seasonScale;
+    const irrScale = hasIrr ? (Number(monthlyIrradiance[i]) * DAYS[i]) / irrTotal : seasonScale;
     // apply per-month shade loss to new solar only (existing is already installed under real shading)
     const monthShade = (shadeFactor?.length === 12) ? Math.min(0.9, Math.max(0, Number(shadeFactor[i]) || 0)) : shadeAvg;
     const newBase = newProdIdeal * irrScale;
@@ -209,5 +233,7 @@ export function computeResidential({
     backupLoads, backupWatts, backupDailyKwh, invKw, backupOk, backupHrsCritical,
     grossCost, netCost, annualSavings, payback, roofArea, monthly, savings, savings25: cum,
     shadeAvg,
+    // irradiance provenance, so the UI can label the basis honestly
+    effectiveSunHrs, irradianceBasis, pshDaysYr,
   };
 }

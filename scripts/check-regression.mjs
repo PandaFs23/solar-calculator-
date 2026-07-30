@@ -97,5 +97,53 @@ if (!onceOk) {
   console.log(`   (derate² would give ${squared.toFixed(2)} — if that matches, an efficiency term is applied twice)`);
 }
 
+// --- Invariant: NASA irradiance replaces PSH, NOT derate ---
+// Each month must equal kW_DC × PSH[m] × DAYS[m] × derate, and the annual
+// total must equal kW_DC × Σ(PSH[m] × DAYS[m]) × derate. If irradiance were
+// folded into derate (or vice versa) these would miss by a factor of derate.
+console.log("\nNASA irradiance drives PSH only — derate still applied exactly once\n");
+const DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+// San Diego climatology, verified against the live POWER endpoint.
+const PSH = [3.2498, 4.0759, 5.1638, 6.1406, 6.1313, 5.8783, 6.1385, 6.0857, 5.3544, 4.3154, 3.4421, 2.9246];
+
+const withIrr = computeResidential({
+  ...baseline, annualKwh: 100000, panels: 13, monthlyIrradiance: PSH,
+});
+const pshDays = PSH.reduce((s, v, i) => s + v * DAYS[i], 0);
+
+const wantAnnual = withIrr.actualKw * pshDays * invProd.derate;
+const annualOk = Math.abs(withIrr.newProd - wantAnnual) < 1;
+if (!annualOk) failed++;
+console.log(`${annualOk ? "✓" : "✗"} annual  got ${withIrr.newProd.toFixed(1)}  want ${wantAnnual.toFixed(1)} (kW × Σ(PSH×DAYS) × derate)`);
+if (!annualOk) {
+  console.log(`   derate² would give ${(withIrr.actualKw * pshDays * invProd.derate ** 2).toFixed(1)}`);
+  console.log(`   derate-free would give ${(withIrr.actualKw * pshDays).toFixed(1)}`);
+}
+
+const monthMisses = withIrr.monthly.filter((m, i) => {
+  const want = withIrr.actualKw * PSH[i] * DAYS[i] * invProd.derate;
+  return Math.abs(m.newSolar - want) > 1.5; // Math.round in the model
+});
+if (monthMisses.length) failed++;
+console.log(`${monthMisses.length === 0 ? "✓" : "✗"} all 12 months match kW × PSH[m] × DAYS[m] × derate${monthMisses.length ? ` (${monthMisses.length} off)` : ""}`);
+
+// Irradiance must actually change the answer — a no-op would mean the basis
+// never reached the production term.
+const noIrr = computeResidential({ ...baseline, annualKwh: 100000, panels: 13 });
+const moved = Math.abs(withIrr.newProd - noIrr.newProd) > 1;
+if (!moved) failed++;
+console.log(`${moved ? "✓" : "✗"} irradiance changes annual production (${noIrr.newProd.toFixed(0)} → ${withIrr.newProd.toFixed(0)} kWh at ${withIrr.effectiveSunHrs.toFixed(2)} vs ${noIrr.effectiveSunHrs.toFixed(2)} PSH)`);
+console.log(`  basis reported: "${noIrr.irradianceBasis}" → "${withIrr.irradianceBasis}"`);
+
+// A partial/zero-filled series must be REJECTED, not silently treated as a
+// dark month — that would understate production.
+const partial = computeResidential({
+  ...baseline, annualKwh: 100000, panels: 13,
+  monthlyIrradiance: PSH.map((v, i) => (i < 6 ? v : 0)),
+});
+const rejected = partial.irradianceBasis === "regional" && Math.abs(partial.newProd - noIrr.newProd) < 1;
+if (!rejected) failed++;
+console.log(`${rejected ? "✓" : "✗"} incomplete monthly series falls back to regional instead of modelling dark months`);
+
 console.log(failed === 0 ? "\nAll regression checks passed." : `\n${failed} check(s) FAILED.`);
 process.exit(failed === 0 ? 0 : 1);
