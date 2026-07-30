@@ -390,6 +390,9 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const shownExist = Math.min(r.existPanels, 16);
   const overflow = (r.nPanels - shownNew) + (r.existPanels - shownExist);
   const offsetColor = r.offsetPct >= 95 ? C.green : r.offsetPct >= 60 ? C.gold : C.copper;
+  // Existing-solar series must appear whenever there IS existing production —
+  // tracked systems (Phase 7) contribute even with the primary card toggled off.
+  const showExisting = r.existProd > 0;
 
   return (
     <>
@@ -529,6 +532,25 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                   )}
                 </div>
               </Field>
+
+              {/* ---- Advanced-only: measured 12-month usage, alongside the
+                     utility it came from. Switching to Advanced is what
+                     reveals it; Basic runs on the single annual figure. ---- */}
+              {viewMode === "advanced" && (
+                <Field label="Monthly kWh usage (Jan–Dec)"
+                  hint="Straight off the bill's usage history. Any value above 0 makes these 12 the source of truth and overrides the annual/bill input above. Leave all zeros to keep using it.">
+                  <MonthlyUsageGrid values={monthlyUsageKwh}
+                    onChange={setMonthlyUsageKwh}
+                    annualFallback={r.annualUsage}
+                    onFillEven={() => {
+                      const base = (inputMode === "kwh" ? annualKwh
+                        : inputMode === "loads" ? r.loadsNow
+                        : (bill / Math.max(rate, 0.01)) * 12) || annualKwh;
+                      setMonthlyUsageKwh(Array(12).fill(Math.round(base / 12)));
+                    }}
+                    onClear={() => setMonthlyUsageKwh(Array(12).fill(0))} />
+                </Field>
+              )}
 
               <Field label="How do you want to enter usage?">
                 <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
@@ -982,21 +1004,6 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 Every calculation constant editable. Changes take effect immediately and update all downstream numbers. Prices remain estimates — replace with distributor pricing before quoting.
               </p>
 
-              {/* Feature 3: monthly usage grid */}
-              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
-                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>MONTHLY kWh USAGE (Jan–Dec)</div>
-                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
-                  Enter measured monthly consumption from 12 utility bills. When any value is &gt; 0 the sum becomes the annual usage and monthly usage in the chart uses these directly. Leave all zeros to use the Basic-tab input.
-                </p>
-                <MonthlyUsageGrid values={monthlyUsageKwh}
-                  onChange={setMonthlyUsageKwh}
-                  onFillEven={() => {
-                    const base = (activeMonthlyUsage ? monthlyUsageKwh.reduce((s, v) => s + v, 0) : (inputMode === "kwh" ? annualKwh : (bill / Math.max(rate, 0.01)) * 12)) || annualKwh;
-                    setMonthlyUsageKwh(Array(12).fill(Math.round(base / 12)));
-                  }}
-                  onClear={() => setMonthlyUsageKwh(Array(12).fill(0))} />
-              </div>
-
               {/* Feature 6: NASA POWER irradiance */}
               <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
                 <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>SITE IRRADIANCE (NASA POWER)</div>
@@ -1253,7 +1260,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                     <Tooltip contentStyle={{ background: C.night, border: `1px solid ${C.line}`, borderRadius: 8, fontSize: 13 }} labelStyle={{ color: C.text }}
                       formatter={(v, name) => [`${v.toLocaleString()} kWh`, name]} />
                     <Legend wrapperStyle={{ fontSize: 13 }} />
-                    {hasExisting && <Bar dataKey="existing" name="Existing solar" stackId="solar" fill={C.green} />}
+                    {showExisting && <Bar dataKey="existing" name="Existing solar" stackId="solar" fill={C.green} />}
                     <Bar dataKey="newSolar" name="New solar" stackId="solar" fill={C.gold} radius={[3, 3, 0, 0]} />
                     <Line dataKey="usage" name="Home usage" stroke={C.copper} strokeWidth={2.5} dot={{ r: 3, fill: C.copper }} />
                   </ComposedChart>
@@ -1398,14 +1405,14 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
           <table className="mono" style={{ borderCollapse: "collapse", width: "100%", fontSize: 10.5, textAlign: "right" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid #999" }}>
-                <th style={{ textAlign: "left" }}>Month</th>{hasExisting && <th>Existing</th>}<th>New solar</th><th>Usage</th><th>Offset</th>
+                <th style={{ textAlign: "left" }}>Month</th>{showExisting && <th>Existing</th>}<th>New solar</th><th>Usage</th><th>Offset</th>
               </tr>
             </thead>
             <tbody>
               {r.monthly.map((m) => (
                 <tr key={m.month}>
                   <td style={{ textAlign: "left", padding: "1px 0" }}>{m.month}</td>
-                  {hasExisting && <td>{fmt(m.existing)}</td>}
+                  {showExisting && <td>{fmt(m.existing)}</td>}
                   <td>{fmt(m.newSolar)}</td><td>{fmt(m.usage)}</td>
                   <td>{fmt(((m.existing + m.newSolar) / Math.max(m.usage, 1)) * 100)}%</td>
                 </tr>
@@ -1414,7 +1421,16 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
           </table>
 
           <div style={{ fontSize: 10, color: "#555", marginTop: 16, lineHeight: 1.5, borderTop: "1px solid #ccc", paddingTop: 8 }}>
-            This is a preliminary estimate, not a binding quote. Production modeled from measured local irradiance, {Math.round(invProd.derate * 100)}% system output after real-world losses, and 0.5%/yr panel degradation. Costs use estimated installed pricing ($2.75/W solar; battery per selected product) and assume 30% federal ITC eligibility — consult a tax professional. Utility rates, export credits, and incentives change; final design and pricing follow a site survey and engineering review.
+            This is a preliminary estimate, not a binding quote. Production modeled from{" "}
+            {r.irradianceBasis === "nasa"
+              ? `NASA POWER climatology for this location (${r.effectiveSunHrs.toFixed(1)} peak sun hrs/day annual average)`
+              : `a regional peak-sun-hours average (${r.effectiveSunHrs.toFixed(1)} hrs/day — not measured at this address)`}
+            , {Math.round(invProd.derate * 100)}% system output after real-world losses, and{" "}
+            {((activeOverrides?.degradation ?? DEGRADATION) * 100).toFixed(1)}%/yr panel degradation.
+            Costs use estimated installed pricing (${(activeOverrides?.costPerWatt ?? COST_PER_WATT).toFixed(2)}/W solar;
+            battery per selected product) and assume {Math.round((activeOverrides?.taxCredit ?? TAX_CREDIT) * 100)}% federal
+            ITC eligibility — consult a tax professional. Utility rates, export credits, and incentives change; final design
+            and pricing follow a site survey and engineering review.
           </div>
         </div>
       </div>
