@@ -15,6 +15,7 @@ import { computeResidential } from "../lib/solarMath.js";
 import { fetchAddressSuggestions, geocodeAddress, fetchPeakSunHours, guessUtility, fetchPropertyType } from "../lib/geo.js";
 import { fetchMonthlyGHI } from "../lib/nasaPower.js";
 import { shadeFactorForMonths } from "../lib/shading.js";
+import { toModelSystems, aggregateProduction, MAX_SYSTEMS } from "../lib/existingSystems.js";
 import { checkFeasibility } from "../lib/feasibility.js";
 import useLocalStorage from "../hooks/useLocalStorage.js";
 import ModeSuggestionBanner from "../components/ModeSuggestionBanner.jsx";
@@ -107,8 +108,9 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const [viewMode, setViewMode] = useState("basic"); // 'basic' | 'advanced'
   const [monthlyUsageKwh, setMonthlyUsageKwh] = useState(Array(12).fill(0));
   const [advOverrides, setAdvOverrides] = useState(ADVANCED_DEFAULTS);
-  // multi-system tracker persists per browser
-  const [additionalSystems, setAdditionalSystems] = useLocalStorage("sc.res.systems.v1", []);
+  // multi-system tracker persists per browser (v2: per-entry size basis,
+  // panel wattage, and a real inverter-derived derate)
+  const [additionalSystems, setAdditionalSystems] = useLocalStorage("sc.res.systems.v2", []);
   const [obstacles, setObstacles] = useState([]);
   // ---- Irradiance engine (Phase 6) ----
   // NASA POWER climatology is the DEFAULT basis, on in both tabs. Basic never
@@ -160,6 +162,15 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const existInverter = existInvProd || inverter; // a recorded inverter model overrides the generic architecture derate
   // label for the existing-panel picker: avoid "Solyndra Solyndra …" when the model name already leads with the brand
   const panelOptLabel = (p) => (p.name.toLowerCase().startsWith(p.mfr.split(" ")[0].toLowerCase()) ? p.name : `${p.mfr} ${p.name}`);
+
+  // Inverter choices for tracked existing arrays — includes legacy and
+  // discontinued models, since that is what is actually on an older roof. The
+  // selected model supplies that system's derate (already device eff × 0.88).
+  const existingInverterOptions = useMemo(() => [
+    { label: "Current products", items: INVERTER_PRODUCTS },
+    { label: "Legacy (older, still supported)", items: LEGACY_INVERTER_PRODUCTS },
+    { label: "Discontinued (no longer sold)", items: DISCONTINUED_INVERTER_PRODUCTS },
+  ].filter((g) => g.items?.length), []);
 
   // apply a configuration preset: sets battery mode/product/units and backup flags
   const applyConfig = (cfg) => {
@@ -330,7 +341,14 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   // Advanced overrides are only applied in advanced mode; basic view preserves the CLAUDE.md regression
   const activeOverrides = viewMode === "advanced" ? advOverrides : undefined;
   const activeMonthlyUsage = (viewMode === "advanced" && monthlyUsageKwh.some((v) => v > 0)) ? monthlyUsageKwh : null;
-  const activeAddSystems = viewMode === "advanced" ? additionalSystems : null;
+  // Tracked systems are NOT advanced-only — a second array is a fact about the
+  // home, not an expert tuning knob. Blank rows are filtered out by
+  // toModelSystems, so an untouched tracker contributes exactly nothing and the
+  // Basic default stays on the CLAUDE.md regression.
+  const activeAddSystems = useMemo(
+    () => toModelSystems(additionalSystems, ALL_INVERTER_PRODUCTS),
+    [additionalSystems]
+  );
 
   const r = useMemo(() => computeResidential({
     rate, inputMode, annualKwh, bill,
@@ -651,9 +669,27 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                     onChange={(v) => setExistProdOverride(v > 0 ? v : null)} />
                   <div className="mono" style={{ fontSize: 11.5, color: C.green, marginTop: 4 }}>
                     Existing production: {fmt(r.existProd)} kWh/yr ({fmt(r.existOffsetPct)}% of usage)
+                    {activeAddSystems.length > 0 && (
+                      <> — includes {activeAddSystems.length} additional tracked system{activeAddSystems.length > 1 ? "s" : ""}</>
+                    )}
                   </div>
                 </Field>
               </Section>
+
+              {/* ---- additional existing arrays (entries 2..5) ---- */}
+              <Field label="More than one existing array?"
+                hint={`The card above is the primary array. Add up to ${MAX_SYSTEMS - 1} more — a garage roof, a later expansion on a different inverter. Their production sums into the existing offset. Saved in this browser.`}>
+                <ExistingSystemsPanel
+                  systems={additionalSystems}
+                  setSystems={setAdditionalSystems}
+                  inverterOptions={existingInverterOptions}
+                  maxAdditional={MAX_SYSTEMS - (hasExisting ? 1 : 0)}
+                  primaryCounted={hasExisting}
+                  aggregateKwh={aggregateProduction(
+                    additionalSystems, ALL_INVERTER_PRODUCTS,
+                    r.pshDaysYr, activeOverrides?.degradation ?? DEGRADATION
+                  )} />
+              </Field>
 
               {/* ---- battery ---- */}
               <div style={{ margin: "0 -24px 22px", padding: "18px 24px", background: battMode !== "none" ? C.tealSoft : "transparent", borderBottom: `1px solid ${C.line}`, transition: "background .25s" }}>
@@ -959,25 +995,6 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                     setMonthlyUsageKwh(Array(12).fill(Math.round(base / 12)));
                   }}
                   onClear={() => setMonthlyUsageKwh(Array(12).fill(0))} />
-              </div>
-
-              {/* Feature 2: existing systems tracker */}
-              <div style={{ padding: 14, background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 18 }}>
-                <div className="mono" style={{ fontSize: 11, letterSpacing: 1.5, color: C.dim, marginBottom: 10 }}>TRACKED EXISTING SYSTEMS (up to 5)</div>
-                <p style={{ fontSize: 12.5, color: C.dim, margin: "0 0 12px", lineHeight: 1.6 }}>
-                  Additional installed systems beyond the primary "Home has existing solar" toggle. Their production sums into the aggregate existing offset. Saved in this browser.
-                </p>
-                <ExistingSystemsPanel systems={additionalSystems} setSystems={setAdditionalSystems}
-                  aggregateKwh={(() => {
-                    let total = 0;
-                    additionalSystems.forEach((s) => {
-                      const derate = 0.8; // uses default DERATE if unspecified
-                      const eff = derate * Math.pow(1 - (advOverrides.degradation ?? DEGRADATION), Math.max(0, new Date().getFullYear() - Number(s.installedYear || 0)));
-                      const prod = (Number(s.measuredKwh) > 0) ? Number(s.measuredKwh) : Number(s.ratedKw || 0) * sunHrs * eff * 365;
-                      total += prod;
-                    });
-                    return total;
-                  })()} />
               </div>
 
               {/* Feature 6: NASA POWER irradiance */}

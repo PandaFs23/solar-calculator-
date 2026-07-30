@@ -15,7 +15,8 @@
 // $0.42/5.0 hrs) even though SDG&E is preselected.
 import { computeResidential } from "../src/lib/solarMath.js";
 import { UTILITIES, INVERTERS } from "../src/data/utilities.js";
-import { ALL_PANEL_PRODUCTS, INVERTER_PRODUCTS, BATTERY_PRODUCTS } from "../src/data/products.js";
+import { ALL_PANEL_PRODUCTS, INVERTER_PRODUCTS, BATTERY_PRODUCTS, ALL_INVERTER_PRODUCTS } from "../src/data/products.js";
+import { toModelSystems, aggregateProduction, emptySystem } from "../src/lib/existingSystems.js";
 
 const panelProd = ALL_PANEL_PRODUCTS.find((p) => p.id === "q_cells_q_home_next_l_g3_420_435_w");
 const invProd   = INVERTER_PRODUCTS.find((p) => p.id === "enphase_iq8m");
@@ -144,6 +145,53 @@ const partial = computeResidential({
 const rejected = partial.irradianceBasis === "regional" && Math.abs(partial.newProd - noIrr.newProd) < 1;
 if (!rejected) failed++;
 console.log(`${rejected ? "✓" : "✗"} incomplete monthly series falls back to regional instead of modelling dark months`);
+
+// --- Phase 7: tracked existing systems ---
+// A blank row must contribute exactly nothing (otherwise adding a row silently
+// moves the proposal), and multiple systems must sum into one existProd number
+// that the downstream offset math consumes without caring how many there were.
+console.log("\nTracked existing systems: blank rows inert, real rows sum\n");
+const blankRows = computeResidential({
+  ...baseline,
+  additionalSystems: toModelSystems([emptySystem(), emptySystem()], ALL_INVERTER_PRODUCTS),
+});
+const inert = EXPECT.every(([, get]) => get(blankRows) === get(r));
+if (!inert) failed++;
+console.log(`${inert ? "✓" : "✗"} two blank tracked rows leave every output unchanged`);
+
+const twoReal = [
+  { ...emptySystem(), sizeBasis: "panels", panelCount: 10, panelWatts: 300, installedYear: new Date().getFullYear() },
+  { ...emptySystem(), sizeBasis: "kw",     ratedKw: 5,     panelWatts: 250, installedYear: new Date().getFullYear() },
+];
+const mapped = toModelSystems(twoReal, ALL_INVERTER_PRODUCTS);
+const kwOk = Math.abs(mapped[0].ratedKw - 3.0) < 1e-9 && Math.abs(mapped[1].ratedKw - 5) < 1e-9;
+if (!kwOk) failed++;
+console.log(`${kwOk ? "✓" : "✗"} panels basis 10×300W → ${mapped[0].ratedKw} kW · kW basis → ${mapped[1].ratedKw} kW`);
+
+const countOk = mapped[0].panelCount === 10 && mapped[1].panelCount === 20;
+if (!countOk) failed++;
+console.log(`${countOk ? "✓" : "✗"} derived panel counts: ${mapped[0].panelCount} (entered) · ${mapped[1].panelCount} (5 kW ÷ 250 W)`);
+
+const summed = computeResidential({ ...baseline, annualKwh: 100000, additionalSystems: mapped });
+const wantSum = mapped.reduce((t, s) => t + s.ratedKw * summed.pshDaysYr * s.inverterDerate, 0);
+const sumOk = Math.abs(summed.existProd - wantSum) < 1;
+if (!sumOk) failed++;
+console.log(`${sumOk ? "✓" : "✗"} summed existProd got ${summed.existProd.toFixed(0)}  want ${wantSum.toFixed(0)} kWh/yr`);
+
+// The panel's displayed aggregate must equal what the model actually used —
+// these were computed by two different code paths before existingSystems.js.
+const shown = aggregateProduction(twoReal, ALL_INVERTER_PRODUCTS, summed.pshDaysYr, 0.005);
+const agreeOk = Math.abs(shown - summed.existProd) < 1;
+if (!agreeOk) failed++;
+console.log(`${agreeOk ? "✓" : "✗"} panel readout (${shown.toFixed(0)}) matches the model (${summed.existProd.toFixed(0)})`);
+
+// A recorded inverter model must actually change the derate.
+const withInv = toModelSystems(
+  [{ ...twoReal[0], invProdId: "enphase_iq8m" }], ALL_INVERTER_PRODUCTS
+);
+const derateOk = withInv[0].inverterDerate === invProd.derate && mapped[0].inverterDerate !== invProd.derate;
+if (!derateOk) failed++;
+console.log(`${derateOk ? "✓" : "✗"} recorded inverter sets derate: generic ${mapped[0].inverterDerate} → IQ8M ${withInv[0].inverterDerate}`);
 
 console.log(failed === 0 ? "\nAll regression checks passed." : `\n${failed} check(s) FAILED.`);
 process.exit(failed === 0 ? 0 : 1);
