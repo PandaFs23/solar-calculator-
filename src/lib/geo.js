@@ -1,7 +1,49 @@
 // Geoapify geocoding + Open-Meteo solar irradiance fetchers.
-// Keys come from .env.local (VITE_GEOAPIFY_KEY / VITE_GEOAPIFY_AUTOCOMPLETE_KEY) —
-// see .env.example. Open-Meteo needs no key.
+// Keys come from .env.local — see .env.example. Open-Meteo needs no key.
+//
+// TWO KEYS, SPLIT BY WORKLOAD (Geoapify's free tier is metered per key, so
+// splitting buys headroom rather than sharing one quota):
+//   VITE_GEOAPIFY_KEY_PRIMARY   → geocoding + autocomplete
+//   VITE_GEOAPIFY_KEY_SECONDARY → static satellite map, and the retry target
+//                                 when PRIMARY returns HTTP 429
+// The older single-purpose names (VITE_GEOAPIFY_KEY /
+// VITE_GEOAPIFY_AUTOCOMPLETE_KEY) still resolve so an existing .env.local
+// keeps working.
 import { UTILITIES, STATE_CODES } from "../data/utilities.js";
+
+const env = import.meta.env;
+const PRIMARY_KEY   = env.VITE_GEOAPIFY_KEY_PRIMARY   || env.VITE_GEOAPIFY_KEY || "";
+const SECONDARY_KEY = env.VITE_GEOAPIFY_KEY_SECONDARY || env.VITE_GEOAPIFY_AUTOCOMPLETE_KEY || "";
+
+export const hasGeoapify = !!PRIMARY_KEY;
+export const hasStaticMap = !!(SECONDARY_KEY || PRIMARY_KEY);
+
+// Geoapify JSON call with a rate-limit escape hatch: a 429 on the primary key
+// is retried once on the secondary. Any other non-OK status throws so callers
+// can fall back to Nominatim.
+async function geoapifyJson(buildUrl) {
+  const keys = [PRIMARY_KEY, SECONDARY_KEY].filter(Boolean);
+  let lastErr = new Error("no Geoapify key");
+  for (let i = 0; i < keys.length; i++) {
+    const res = await fetch(buildUrl(keys[i]));
+    if (res.ok) return res.json();
+    // Only a quota error is worth retrying on the other key; a 400/404 would
+    // fail identically and would just burn the secondary quota.
+    if (res.status !== 429) throw new Error(`Geoapify HTTP ${res.status}`);
+    lastErr = new Error("Geoapify HTTP 429 (rate limited)");
+    if (i < keys.length - 1) console.warn("Geoapify primary key rate-limited — retrying on secondary");
+  }
+  throw lastErr;
+}
+
+// Satellite still image for the located roof. Uses the SECONDARY key so map
+// loads never eat into the geocoding quota.
+export function staticMapUrl(la, lo, { width = 600, height = 400, zoom = 19 } = {}) {
+  const key = SECONDARY_KEY || PRIMARY_KEY;
+  if (!key) return null;
+  return `https://maps.geoapify.com/v1/staticmap?style=satellite&width=${width}&height=${height}` +
+    `&center=lonlat:${lo},${la}&zoom=${zoom}&apiKey=${key}`;
+}
 
 // Without Geoapify keys (local testing) we fall back to Nominatim's free
 // search API — fine for light interactive use per the OSM usage policy; the
@@ -19,32 +61,57 @@ async function nominatimSearch(text, limit) {
 }
 
 export async function fetchAddressSuggestions(text) {
-  const key = import.meta.env.VITE_GEOAPIFY_AUTOCOMPLETE_KEY;
-  if (!key) return nominatimSearch(text, 5);
-  const res = await fetch(
-    `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(text)}&filter=countrycode:us&limit=5&format=json&apiKey=${key}`
-  ).then((x) => x.json());
-  return (res?.results || []).map((g) => ({
-    label: g.formatted,
-    lat: g.lat, lon: g.lon,
-    state: g.state || null,
-  }));
+  if (!PRIMARY_KEY) return nominatimSearch(text, 5);
+  try {
+    const res = await geoapifyJson((k) =>
+      `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(text)}&filter=countrycode:us&limit=5&format=json&apiKey=${k}`
+    );
+    return (res?.results || []).map((g) => ({
+      label: g.formatted, lat: g.lat, lon: g.lon, state: g.state || null,
+    }));
+  } catch (err) {
+    // Autocomplete is a convenience — degrade to the keyless path rather than
+    // leaving the rep with a dead suggestion list.
+    console.warn("Geoapify autocomplete failed, falling back to Nominatim:", err);
+    return nominatimSearch(text, 5);
+  }
 }
 
+// Resolved addresses are cached for the session so re-renders and repeated
+// "Locate" presses on the same string don't re-bill the geocoding quota.
+const geocodeCache = new Map();
+
 export async function geocodeAddress(text) {
-  const key = import.meta.env.VITE_GEOAPIFY_KEY;
-  if (!key) {
+  const cacheKey = text.trim().toLowerCase();
+  if (geocodeCache.has(cacheKey)) return geocodeCache.get(cacheKey);
+
+  let result;
+  if (!PRIMARY_KEY) {
     const results = await nominatimSearch(text, 1);
     if (!results.length) throw new Error("not found");
     const { lat, lon, label, state } = results[0];
-    return { lat, lon, formatted: label, state };
+    result = { lat, lon, formatted: label, state };
+  } else {
+    let geo;
+    try {
+      geo = await geoapifyJson((k) =>
+        `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(text)}&filter=countrycode:us&limit=1&format=json&apiKey=${k}`
+      );
+    } catch (err) {
+      console.warn("Geoapify geocode failed, falling back to Nominatim:", err);
+      const results = await nominatimSearch(text, 1);
+      if (!results.length) throw new Error("not found");
+      const { lat, lon, label, state } = results[0];
+      result = { lat, lon, formatted: label, state };
+      geocodeCache.set(cacheKey, result);
+      return result;
+    }
+    if (!geo?.results?.length) throw new Error("not found");
+    const { lat, lon, formatted, state } = geo.results[0];
+    result = { lat, lon, formatted, state: state || null };
   }
-  const geo = await fetch(
-    `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(text)}&filter=countrycode:us&limit=1&format=json&apiKey=${key}`
-  ).then((x) => x.json());
-  if (!geo?.results?.length) throw new Error("not found");
-  const { lat, lon, formatted, state } = geo.results[0];
-  return { lat, lon, formatted, state: state || null };
+  geocodeCache.set(cacheKey, result);
+  return result;
 }
 
 // last full calendar year of daily solar radiation (MJ/m²) → average peak sun hours

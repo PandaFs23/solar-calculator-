@@ -232,7 +232,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
       try {
         setSuggestions(await fetchAddressSuggestions(v));
       } catch (err) { console.warn("Address suggestion fetch failed:", err); setSuggestions([]); }
-    }, 700);
+    }, 300);
   };
 
   const pickSuggestion = (sug) => {
