@@ -16,7 +16,15 @@ const PRIMARY_KEY   = env.VITE_GEOAPIFY_KEY_PRIMARY   || env.VITE_GEOAPIFY_KEY |
 const SECONDARY_KEY = env.VITE_GEOAPIFY_KEY_SECONDARY || env.VITE_GEOAPIFY_AUTOCOMPLETE_KEY || "";
 
 export const hasGeoapify = !!PRIMARY_KEY;
-export const hasStaticMap = !!(SECONDARY_KEY || PRIMARY_KEY);
+
+// NOTE ON THE SATELLITE MAP: there is deliberately no Geoapify static-map
+// helper here. Geoapify's static-map API has no satellite style — requesting
+// style=satellite returns HTTP 400 listing the valid styles, all of which are
+// street/vector (osm-carto, osm-bright, positron, dark-matter, toner, …).
+// Verified against the live endpoint 2026-07. The roof view needs real imagery
+// for orientation and shading, so components/AerialView.jsx stays on Esri
+// World Imagery (keyless). The SECONDARY key therefore serves only as the
+// rate-limit fallback below.
 
 // Geoapify JSON call with a rate-limit escape hatch: a 429 on the primary key
 // is retried once on the secondary. Any other non-OK status throws so callers
@@ -34,15 +42,6 @@ async function geoapifyJson(buildUrl) {
     if (i < keys.length - 1) console.warn("Geoapify primary key rate-limited — retrying on secondary");
   }
   throw lastErr;
-}
-
-// Satellite still image for the located roof. Uses the SECONDARY key so map
-// loads never eat into the geocoding quota.
-export function staticMapUrl(la, lo, { width = 600, height = 400, zoom = 19 } = {}) {
-  const key = SECONDARY_KEY || PRIMARY_KEY;
-  if (!key) return null;
-  return `https://maps.geoapify.com/v1/staticmap?style=satellite&width=${width}&height=${height}` +
-    `&center=lonlat:${lo},${la}&zoom=${zoom}&apiKey=${key}`;
 }
 
 // Without Geoapify keys (local testing) we fall back to Nominatim's free

@@ -120,6 +120,11 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const [irradiance, setIrradiance] = useState(null); // NASA POWER record
   const [useIrr, setUseIrr] = useState(true);
   const [irrStatus, setIrrStatus] = useState("idle"); // idle | loading | ok | failed
+  // Where the FALLBACK sunHrs came from, so the basis label can tell an
+  // Open-Meteo measurement for this address apart from a regional default.
+  // Three real sources → three labels; "regional average" must not be claimed
+  // for a number that was actually measured.
+  const [pshSource, setPshSource] = useState("regional"); // regional | openmeteo
   const [siteFeas, setSiteFeas] = useState({
     availableRoofSqft: 0, roofPsfCapacity: 0,
     mainBreakerAmps: 0, interconnectKw: 0,
@@ -299,8 +304,9 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
       });
 
     try {
-      const { psh, yr } = await fetchPeakSunHours(la, lo);
+      const { psh } = await fetchPeakSunHours(la, lo);
       setSunHrs(Math.round(psh * 10) / 10);
+      setPshSource("openmeteo");
 
       // rough state + utility territory guess from coordinates
       let guessed = "";
@@ -308,7 +314,11 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
       if (g) { pickUtilityKeepSun(g.id, psh); guessed = ` · looks like ${g.label} territory`; }
 
       setGeoState("done");
-      setGeoMsg(`${shortName} — measured ${psh.toFixed(1)} peak sun hrs/day (${yr} data)${guessed}`);
+      // Deliberately does NOT quote a peak-sun-hours figure. NASA POWER is the
+      // active basis when it lands, so asserting the Open-Meteo number here put
+      // two different PSH values on screen at once. The irradiance line below
+      // owns that claim — one number, one place.
+      setGeoMsg(`${shortName}${guessed}`);
     } catch (err) {
       console.warn("Solar data fetch failed:", err);
       setGeoState("error");
@@ -523,6 +533,12 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                   Irradiance:{" "}
                   {r.irradianceBasis === "nasa" ? (
                     <span style={{ color: C.green }}>NASA POWER climatology</span>
+                  ) : pshSource === "openmeteo" ? (
+                    <span style={{ color: C.gold }}>
+                      Open-Meteo measured at this address
+                      {irrStatus === "failed" && " — NASA data unavailable"}
+                      {irrStatus === "loading" && " — fetching NASA data…"}
+                    </span>
                   ) : (
                     <span style={{ color: C.dim }}>
                       regional average
@@ -1424,6 +1440,8 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
             This is a preliminary estimate, not a binding quote. Production modeled from{" "}
             {r.irradianceBasis === "nasa"
               ? `NASA POWER climatology for this location (${r.effectiveSunHrs.toFixed(1)} peak sun hrs/day annual average)`
+              : pshSource === "openmeteo"
+              ? `Open-Meteo irradiance measured at this address (${r.effectiveSunHrs.toFixed(1)} peak sun hrs/day)`
               : `a regional peak-sun-hours average (${r.effectiveSunHrs.toFixed(1)} hrs/day — not measured at this address)`}
             , {Math.round(invProd.derate * 100)}% system output after real-world losses, and{" "}
             {((activeOverrides?.degradation ?? DEGRADATION) * 100).toFixed(1)}%/yr panel degradation.
