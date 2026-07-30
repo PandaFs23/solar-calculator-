@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "api": "node server.js",
     "lint": "eslint src/",
-    "check-links": "node scripts/check-links.mjs"
+    "check-links": "node scripts/check-links.mjs",
+    "check-regression": "node scripts/check-regression.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
