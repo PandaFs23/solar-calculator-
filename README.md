@@ -45,6 +45,12 @@ npm install --save-dev eslint @eslint/js globals eslint-plugin-react eslint-plug
 npm run lint
 ```
 
+**Check the calculation didn't move:**
+```bash
+npm run check-regression
+```
+Asserts the documented reference scenario and the honest-data invariants (derate applied exactly once, irradiance drives peak sun hours only, blank tracked systems stay inert). Run it with `npm run build` before any commit.
+
 ---
 
 ## Architecture
@@ -79,7 +85,10 @@ solar-calculator-/
 
 ### Key Features
 - **Bill scanner** — AI reads a PDF utility bill (Anthropic Claude) and auto-fills utility, usage, rate, and any existing solar/battery from a NEM statement *(requires API key — see [Enabling Bill Scanning](#enabling-bill-scanning) below)*
-- **Address lookup** — Nominatim geocoding + Open-Meteo solar irradiance data for real measured peak sun hours at the exact property
+- **Address lookup** — Geoapify (or keyless Nominatim) geocoding for the exact property
+- **Real irradiance** — NASA POWER monthly climatology sets the peak-sun-hours basis for both the annual total and the month-by-month split, replacing a flat regional guess. On by default; falls back to Open-Meteo, then a regional average, with the active source always labelled
+- **Multi-array support** — track up to 5 existing systems (main roof, garage, a later expansion on a different inverter); their production sums into the offset
+- **Monthly usage entry** — 12-month kWh grid (Advanced) for month-by-month production vs. usage instead of an annual average
 - **Satellite roof view** — Esri World Imagery aerial map centered on the located address
 - **Product catalog** — Real panel, inverter, and battery specs (see `src/data/products.js`)
 - **25-year savings model** — Includes utility rate escalation (4%/yr), panel degradation (0.5%/yr), and battery arbitrage economics
@@ -166,8 +175,10 @@ Pushing to `main` automatically builds and deploys to GitHub Pages via `.github/
 | Service | Used for | Key required | Notes |
 |---|---|---|---|
 | [Anthropic Claude](https://anthropic.com) | PDF bill scanning | Yes (optional) | See [Enabling Bill Scanning](#enabling-bill-scanning). Not used unless key is configured. |
-| [Nominatim / OpenStreetMap](https://nominatim.org) | Address geocoding | No | Free public API. Browser automatically sends the page URL as a `Referer` header, which identifies the app per Nominatim's usage policy. |
-| [Open-Meteo](https://open-meteo.com) | Historical solar irradiance | No | Free, generous limits, no key needed. |
+| [Geoapify](https://www.geoapify.com) | Address geocoding + autocomplete | Optional | Two keys, split by workload — `VITE_GEOAPIFY_KEY_PRIMARY` for lookups, `VITE_GEOAPIFY_KEY_SECONDARY` as the HTTP 429 retry target (the free tier is metered per key). Falls back to Nominatim with no keys. |
+| [Nominatim / OpenStreetMap](https://nominatim.org) | Address geocoding fallback | No | Free public API. Browser automatically sends the page URL as a `Referer` header, which identifies the app per Nominatim's usage policy. |
+| [NASA POWER](https://power.larc.nasa.gov) | Monthly solar irradiance (primary) | No | Free, no key. Monthly climatology by lat/lon; sets the peak-sun-hours basis for the production model. |
+| [Open-Meteo](https://open-meteo.com) | Historical solar irradiance (fallback) | No | Free, generous limits, no key needed. Used when NASA POWER is unavailable. |
 | [Esri World Imagery](https://www.esri.com) | Satellite roof view | No | Public tile endpoint. Attribution shown in the map view ("Imagery © Esri World Imagery") as required. |
 
 ---
