@@ -114,6 +114,8 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
   const [sitePos, setSitePos] = useState(null);
   const [propType, setPropType] = useState(null); // OSM building-tag hint for the located address
   const sugTimer = useRef(null);
+  // Monotonic token so out-of-order address lookups can't overwrite newer state.
+  const geoReqToken = useRef(0);
 
   const utility = UTILITIES.find((u) => u.id === utilityId);
   const schedules = getSchedules(utility, true);
@@ -195,6 +197,11 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
   };
 
   const fetchSolarFor = async (la, lo, shortName, stateName) => {
+    // Claim this lookup's token. A newer address bumps geoReqToken.current, so
+    // any async result from an earlier lookup is discarded instead of applied.
+    const token = ++geoReqToken.current;
+    const isStale = () => token !== geoReqToken.current;
+
     setSitePos({ la, lo });
     setGeoState("loading");
     setGeoMsg("Pulling a year of solar data for this location…");
@@ -202,10 +209,11 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
     setPropType(null);
     onLocated?.(shortName);
     fetchPropertyType(la, lo)
-      .then((pt) => setPropType({ ...pt, addr: shortName }))
+      .then((pt) => { if (!isStale()) setPropType({ ...pt, addr: shortName }); })
       .catch((err) => console.warn("Property type lookup failed:", err));
     try {
       const { psh, yr } = await fetchPeakSunHours(la, lo);
+      if (isStale()) return; // a newer address won the race — abandon this result
       setSunHrs(Math.round(psh * 10) / 10);
       let guessed = "";
       const g = guessUtility(la, lo, stateName);
@@ -213,6 +221,7 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
       setGeoState("done");
       setGeoMsg(`${shortName} — measured ${psh.toFixed(1)} peak sun hrs/day (${yr} data)${guessed}`);
     } catch (err) {
+      if (isStale()) return;
       console.warn("Solar data fetch failed:", err);
       setGeoState("error");
       setGeoMsg("Found the address but couldn't pull its solar data — set sun hours manually.");

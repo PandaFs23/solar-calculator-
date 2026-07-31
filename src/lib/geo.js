@@ -78,7 +78,18 @@ export async function fetchAddressSuggestions(text) {
 
 // Resolved addresses are cached for the session so re-renders and repeated
 // "Locate" presses on the same string don't re-bill the geocoding quota.
+// Capped so a long kiosk/day-long session can't grow the Map without bound;
+// once full, the oldest entry (Map keeps insertion order) is evicted first.
+const GEOCODE_CACHE_MAX = 200;
 const geocodeCache = new Map();
+
+function cacheGeocode(key, value) {
+  if (geocodeCache.size >= GEOCODE_CACHE_MAX) {
+    const oldest = geocodeCache.keys().next().value;
+    if (oldest !== undefined) geocodeCache.delete(oldest);
+  }
+  geocodeCache.set(key, value);
+}
 
 export async function geocodeAddress(text) {
   const cacheKey = text.trim().toLowerCase();
@@ -102,14 +113,14 @@ export async function geocodeAddress(text) {
       if (!results.length) throw new Error("not found");
       const { lat, lon, label, state } = results[0];
       result = { lat, lon, formatted: label, state };
-      geocodeCache.set(cacheKey, result);
+      cacheGeocode(cacheKey, result);
       return result;
     }
     if (!geo?.results?.length) throw new Error("not found");
     const { lat, lon, formatted, state } = geo.results[0];
     result = { lat, lon, formatted, state: state || null };
   }
-  geocodeCache.set(cacheKey, result);
+  cacheGeocode(cacheKey, result);
   return result;
 }
 

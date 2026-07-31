@@ -18,11 +18,26 @@ function sendHtml(res, html) {
   res.end(html);
 }
 
+// Cap the request body so a single client can't stream an unbounded payload
+// into memory (a trivial denial-of-service). 1 MB is far more than any
+// legitimate sizing request needs.
+const MAX_BODY_BYTES = 1024 * 1024;
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk.toString(); });
+    let size = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('Payload too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8');
       if (!body) return resolve({});
       try {
         resolve(JSON.parse(body));
@@ -136,6 +151,12 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify({ error: 'Not found' }));
 });
+
+// Drop connections that go idle or hold a request open too long, so a slow /
+// half-open client can't tie up the server indefinitely.
+server.requestTimeout = 30000; // 30s to finish sending a request
+server.headersTimeout = 15000; // 15s to send headers
+server.timeout = 60000;        // 60s socket inactivity
 
 server.listen(PORT, () => {
   console.log(`Solar calculator server running on http://localhost:${PORT}`);

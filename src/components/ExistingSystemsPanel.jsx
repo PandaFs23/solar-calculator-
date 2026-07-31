@@ -30,6 +30,7 @@ function SysCard({ sys, index, onChange, onDelete, inverterOptions }) {
     <div style={{ background: C.night, border: `1px solid ${C.line}`, borderRadius: 10, padding: "12px 14px" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
         <input value={s.name} placeholder={`System name (e.g. ${index === 0 ? "Garage roof" : "Back slope"})`}
+          maxLength={60}
           onChange={(e) => set("name", e.target.value)}
           style={{ flex: 1, minWidth: 0, background: "transparent", color: C.text, border: "none",
             borderBottom: `1px solid ${C.line}`, padding: "4px 2px", fontSize: 14, fontFamily: "inherit" }} />

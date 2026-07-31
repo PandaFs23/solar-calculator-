@@ -340,6 +340,12 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   };
 
   const fetchSolarFor = async (la, lo, shortName, stateName) => {
+    // Claim this lookup's token. If the user picks another address before these
+    // async calls resolve, `token` stops matching geoReqToken.current and every
+    // stale result is dropped instead of clobbering the newer location's state.
+    const token = ++geoReqToken.current;
+    const isStale = () => token !== geoReqToken.current;
+
     setSitePos({ la, lo });
     setGeoState("loading");
     setGeoMsg("Pulling a year of solar data for this location…");
@@ -348,7 +354,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
     setPropType(null);
     onLocated?.(shortName);
     fetchPropertyType(la, lo)
-      .then((pt) => setPropType({ ...pt, addr: shortName }))
+      .then((pt) => { if (!isStale()) setPropType({ ...pt, addr: shortName }); })
       .catch((err) => console.warn("Property type lookup failed:", err));
 
     // Irradiance: fire-and-forget alongside the rest. A failure or timeout
@@ -357,14 +363,15 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
     setIrradiance(null);
     setIrrStatus("loading");
     fetchMonthlyGHI(la, lo)
-      .then((data) => { setIrradiance(data); setIrrStatus("ok"); })
+      .then((data) => { if (!isStale()) { setIrradiance(data); setIrrStatus("ok"); } })
       .catch((err) => {
         console.warn("NASA POWER fetch failed — staying on regional average:", err);
-        setIrrStatus("failed");
+        if (!isStale()) setIrrStatus("failed");
       });
 
     try {
       const { psh } = await fetchPeakSunHours(la, lo);
+      if (isStale()) return; // a newer address won the race — abandon this result
       setSunHrs(Math.round(psh * 10) / 10);
       setPshSource("openmeteo");
 
@@ -380,6 +387,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
       // owns that claim — one number, one place.
       setGeoMsg(`${shortName}${guessed}`);
     } catch (err) {
+      if (isStale()) return;
       console.warn("Solar data fetch failed:", err);
       setGeoState("error");
       setGeoMsg("Found the address but couldn't pull its solar data — set sun hours manually.");
@@ -470,6 +478,10 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   // bar renders inside this module's subtree, which App.jsx hides with
   // display:none, taking the fixed-position bar with it.
   const resultsRef = useRef(null);
+  // Monotonic token so out-of-order address lookups can't overwrite newer state.
+  // Each fetchSolarFor() call claims the next token; any async result whose
+  // token is no longer current is discarded instead of applied.
+  const geoReqToken = useRef(0);
   const [showLiveBar, setShowLiveBar] = useState(false);
   useEffect(() => {
     const el = resultsRef.current;
@@ -706,7 +718,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                   ) : (
                     <span style={{ color: C.text }}>your utility's online account</span>
                   )}
-                  {" "}→ log in, then open <span style={{ color: C.text }}>Billing & Usage History</span>, download the PDF, and drop it in the uploader above.
+                  {" "}→ log in, then open <span style={{ color: C.text }}>Billing & Usage History</span> to read your annual kWh and rate, and enter them above.
                 </div>
               </Field>
 

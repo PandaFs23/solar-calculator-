@@ -4,7 +4,7 @@ Hello! My name is Nick and I wanted to create this solar app tool for anyone to 
 
 ---
 
-A professional-grade residential solar sizing tool. Upload a utility bill to auto-fill, or enter usage manually. Calculates panel count, system cost, payback period, and 25-year savings — factoring in existing solar, batteries, and future loads like EVs.
+A professional-grade residential solar sizing tool. Enter your usage manually or estimate it from your monthly bill. Calculates panel count, system cost, payback period, and 25-year savings — factoring in existing solar, batteries, and future loads like EVs.
 
 **Live app:** [pandafs23.github.io/solar-calculator-](https://pandafs23.github.io/solar-calculator-/)
 
@@ -84,7 +84,6 @@ solar-calculator-/
 ```
 
 ### Key Features
-- **Bill scanner** — AI reads a PDF utility bill (Anthropic Claude) and auto-fills utility, usage, rate, and any existing solar/battery from a NEM statement *(requires API key — see [Enabling Bill Scanning](#enabling-bill-scanning) below)*
 - **Address lookup** — Geoapify (or keyless Nominatim) geocoding for the exact property
 - **Real irradiance** — NASA POWER monthly climatology sets the peak-sun-hours basis for both the annual total and the month-by-month split, replacing a flat regional guess. On by default; falls back to Open-Meteo, then a regional average, with the active source always labelled
 - **Multi-array support** — track up to 5 existing systems (main roof, garage, a later expansion on a different inverter); their production sums into the offset
@@ -93,29 +92,6 @@ solar-calculator-/
 - **Product catalog** — Real panel, inverter, and battery specs (see `src/data/products.js`)
 - **25-year savings model** — Includes utility rate escalation (4%/yr), panel degradation (0.5%/yr), and battery arbitrage economics
 - **Print / PDF report** — `window.print()` produces a clean customer-ready report
-
----
-
-## Enabling Bill Scanning
-
-The PDF bill upload uses Anthropic's Claude AI. It is **off by default** — the rest of the app works fully without it.
-
-To enable it locally:
-
-1. Get an API key from [console.anthropic.com](https://console.anthropic.com)
-2. Copy `.env.example` to `.env.local`:
-   ```bash
-   cp .env.example .env.local
-   ```
-3. Paste your key into `.env.local`:
-   ```
-   VITE_ANTHROPIC_API_KEY=sk-ant-...
-   ```
-4. Run `npm run dev` — bill scanning will now work
-
-> **Privacy note:** When bill scanning is enabled, the uploaded PDF is sent to Anthropic's API for processing. The app itself stores nothing — no user data is saved anywhere.
-
-> **Production note:** For a deployed site, a backend proxy is the more secure approach (keeps the key off the client). The included `server.js` can be extended for this purpose.
 
 ---
 
@@ -174,7 +150,6 @@ Pushing to `main` automatically builds and deploys to GitHub Pages via `.github/
 
 | Service | Used for | Key required | Notes |
 |---|---|---|---|
-| [Anthropic Claude](https://anthropic.com) | PDF bill scanning | Yes (optional) | See [Enabling Bill Scanning](#enabling-bill-scanning). Not used unless key is configured. |
 | [Geoapify](https://www.geoapify.com) | Address geocoding + autocomplete | Optional | Two keys, split by workload — `VITE_GEOAPIFY_KEY_PRIMARY` for lookups, `VITE_GEOAPIFY_KEY_SECONDARY` as the HTTP 429 retry target (the free tier is metered per key). Falls back to Nominatim with no keys. |
 | [Nominatim / OpenStreetMap](https://nominatim.org) | Address geocoding fallback | No | Free public API. Browser automatically sends the page URL as a `Referer` header, which identifies the app per Nominatim's usage policy. |
 | [NASA POWER](https://power.larc.nasa.gov) | Monthly solar irradiance (primary) | No | Free, no key. Monthly climatology by lat/lon; sets the peak-sun-hours basis for the production model. |
