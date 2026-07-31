@@ -165,7 +165,20 @@ Run it alongside `npm run build` at every commit boundary.
 
 ## Backlog (needs owner input where noted)
 
-- **Rotate/replace the two Geoapify keys before any public deploy.** The pair currently in `.env.local` was pasted into a chat transcript, so treat them as disclosed. Generate fresh keys, domain-restrict them to the deploy origin, and remember `VITE_*` values are visible in the client bundle by design.
+- **Rotate + domain-restrict the two Geoapify keys.** The current pair was pasted into a chat transcript AND is inlined in the live bundle (repo secrets → Vite → JS). Neither is a code leak — the keys appear in no commit on any branch — but a `VITE_*` value is public by design, so the mitigation is origin restriction, not secrecy.
+
+  **Order matters** — revoking first would break the live site until the next build:
+  1. Geoapify dashboard → create two new keys → set **Allowed origins** to `https://pandafs23.github.io` (add `http://localhost:5173` too if you want them working in `npm run dev`; otherwise local falls back to Nominatim, which is fine).
+  2. GitHub → Settings → Secrets and variables → Actions → set `VITE_GEOAPIFY_KEY_PRIMARY` and `VITE_GEOAPIFY_KEY_SECONDARY` to the new values. (The legacy `VITE_GEOAPIFY_KEY` / `VITE_GEOAPIFY_AUTOCOMPLETE_KEY` secrets still resolve — delete them once the new pair is in, so only one pair is live.)
+  3. Re-run the **Deploy to GitHub Pages** workflow (push to `main`, or Actions → Run workflow) so the bundle picks up the new keys.
+  4. Confirm the new key is live, **then** revoke the old pair in Geoapify.
+  5. Update your local `.env.local` to match.
+
+  Sanity check that the swap landed — the old values must be gone from the live bundle:
+  ```
+  curl -s https://pandafs23.github.io/solar-calculator-/ | grep -o 'assets/index-[^"]*\.js'
+  curl -s https://pandafs23.github.io/solar-calculator-/assets/<that-file> | grep -c '<old-key>'
+  ```
 - Array tilt/azimuth for irradiance: NASA POWER `ALLSKY_SFC_SW_DWN` and Open-Meteo are both horizontal-plane. A tilted-plane transposition (or POWER's `SI_TILTED_AVG`) would be the honest upgrade at the `pshDaysYr` seam in `solarMath.js`.
 - Real distributor pricing for panels, inverters, batteries (owner) — replaces $/W and $/kWh estimates.
 - Commercial panel specs from the owner spreadsheet (owner re-provides `v17e.xlsx`) — replace `placeholder — confirm` entries.
