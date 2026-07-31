@@ -33,6 +33,7 @@ import ExistingSystemsPanel from "../components/ExistingSystemsPanel.jsx";
 import ShadingEditor from "../components/ShadingEditor.jsx";
 import IrradiancePanel from "../components/IrradiancePanel.jsx";
 import FeasibilityPanel from "../components/FeasibilityPanel.jsx";
+import LiveSummaryBar from "../components/LiveSummaryBar.jsx";
 
 const ADVANCED_DEFAULTS = {
   degradation: DEGRADATION, costPerWatt: COST_PER_WATT, taxCredit: TAX_CREDIT,
@@ -418,6 +419,36 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   // When the design changes and produces new blockers, clear the acknowledgment
   useEffect(() => { if (feasibility.summary.errors > 0) setFeasibilityAck(false); }, [feasibility.summary.errors]);
 
+  // ---- live summary bar ----
+  // Shows once the sticky results panel leaves the viewport, so the numbers
+  // stay visible over System Configuration / Household Loads / the charts,
+  // which sit outside the sticky panel's containing block.
+  // A scroll listener rather than IntersectionObserver, and a synchronous
+  // handler rather than an rAF-coalesced one. Both choices are about keeping
+  // this verifiable: browsers already throttle scroll to one event per frame,
+  // so rAF buys almost nothing, while IO delivery and rAF callbacks both
+  // silently no-op in embedded/headless contexts — leaving no way to prove the
+  // behavior works. A rect read on a scroll event can be exercised directly.
+  //
+  // No visibility guard is needed for the Residential/Commercial switch: the
+  // bar renders inside this module's subtree, which App.jsx hides with
+  // display:none, taking the fixed-position bar with it.
+  const resultsRef = useRef(null);
+  const [showLiveBar, setShowLiveBar] = useState(false);
+  useEffect(() => {
+    const el = resultsRef.current;
+    if (!el) return;
+    // panel has scrolled fully above the viewport — hand off to the bar
+    const measure = () => setShowLiveBar(el.getBoundingClientRect().bottom <= 8);
+    measure();
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => {
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
   const fmt = (n, d = 0) =>
     n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 
@@ -432,6 +463,13 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
 
   return (
     <>
+      <LiveSummaryBar visible={showLiveBar} items={[
+        { label: "ARRAY", value: `${r.nPanels} panels · ${fmt(r.actualKw, 1)} kW`, color: C.gold },
+        { label: "OFFSET", value: `${fmt(Math.min(r.offsetPct, 999))}%`, color: offsetColor },
+        { label: "NET COST", value: `$${fmt(r.netCost)}`, color: C.text },
+        { label: "PAYBACK", value: r.payback > 0 ? `${fmt(r.payback, 1)} yrs` : "—", color: C.green },
+        { label: "25-YR", value: `$${fmt(r.savings25)}`, color: C.green },
+      ]} />
       <div className="app-screen" style={{ maxWidth: 1040, margin: "0 auto", padding: "0 20px 64px" }}>
         <h1 style={{ fontSize: "clamp(26px, 4vw, 40px)", fontWeight: 700, margin: "4px 0 8px", lineHeight: 1.15 }}>
           From utility bill to rooftop array
@@ -952,8 +990,10 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
               </Field>
             </div>
 
-            {/* ---- array + offset ---- */}
-            <div style={{ background: C.slate, border: `1px solid ${C.line}`, borderRadius: 14, padding: 24, display: "flex", flexDirection: "column" }}>
+            {/* ---- array + offset ----
+                 sticky-results (App.jsx) pins this alongside the inputs on
+                 wide screens so the live numbers stay on screen while editing */}
+            <div ref={resultsRef} className="sticky-results" style={{ background: C.slate, border: `1px solid ${C.line}`, borderRadius: 14, padding: 24, display: "flex", flexDirection: "column" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
                 <span className="mono" style={{ fontSize: 12, letterSpacing: 2, color: C.dim }}>YOUR SYSTEM</span>
                 <span className="mono" style={{ fontSize: 13, color: C.gold }}>

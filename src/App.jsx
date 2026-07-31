@@ -73,8 +73,33 @@ export default function App() {
         .regs-cat-body.open { grid-template-rows: 1fr; }
         .regs-cat-body > div { overflow: hidden; }
         @media (prefers-reduced-motion: reduce) { .regs-cat-body { transition: none; } }
+        /* Results panel tracks the input column on wide screens, so the rep
+           watches panel count / offset / cost update live while editing
+           instead of scrolling back up to check.
+           align-self:start is load-bearing: a grid item defaults to stretch,
+           which makes it as tall as the (very long) inputs column and leaves
+           sticky with nothing to travel over. max-height + overflow keep a
+           tall panel fully reachable on short viewports. */
+        @media (min-width: 900px) {
+          .sticky-results {
+            position: sticky;
+            top: 20px;
+            align-self: start;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-width: thin;
+            scrollbar-color: ${C.line} transparent;
+          }
+          .sticky-results::-webkit-scrollbar { width: 8px; }
+          .sticky-results::-webkit-scrollbar-thumb { background: ${C.line}; border-radius: 4px; }
+          .sticky-results::-webkit-scrollbar-track { background: transparent; }
+        }
+
         .print-report { display: none; }
         @media print {
+          .sticky-results { position: static !important; max-height: none !important; overflow: visible !important; }
+          .live-summary-bar { display: none !important; }
           @page { margin: 12mm; }
           .app-root { background: #fff !important; min-height: 0 !important; }
           .app-screen { display: none !important; }

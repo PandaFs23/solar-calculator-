@@ -608,8 +608,10 @@ export default function CommercialCalculator({ onSwitchMode, onLocated, suppress
               </div>
             </div>
 
-            {/* ---- system + demand panel ---- */}
-            <div style={{ background: C.slate, border: `1px solid ${C.line}`, borderRadius: 14, padding: 24, display: "flex", flexDirection: "column" }}>
+            {/* ---- system + demand panel ----
+                 sticky-results (App.jsx) pins this alongside the inputs on
+                 wide screens so the live numbers stay on screen while editing */}
+            <div className="sticky-results" style={{ background: C.slate, border: `1px solid ${C.line}`, borderRadius: 14, padding: 24, display: "flex", flexDirection: "column" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
                 <span className="mono" style={{ fontSize: 12, letterSpacing: 2, color: C.dim }}>PROPOSED SYSTEM</span>
                 <span className="mono" style={{ fontSize: 13, color: C.gold }}>
