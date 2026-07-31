@@ -1325,11 +1325,19 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                         <MiniInput label={qty > 1 ? "Watts ea." : "Watts"} value={unitW} min={10} max={20000} step={50}
                           onChange={(v) => setLoadVal(a.id, { watts: v })} />
                         {a.ev ? (
-                          <div style={{ minWidth: 140 }}>
-                            <div className="mono" style={{ fontSize: 10.5, color: C.dim, marginBottom: 3 }}>
-                              {fmt(evMiles)} mi/yr {qty > 1 ? "each" : ""} → {fmt(annual)} kWh
+                          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                            {/* Typed input as well as the slider: the range now
+                                runs to 150k for fleet/high-mileage cases, which
+                                squeezes the common 8-15k residential band into
+                                the first few percent of the track. */}
+                            <MiniInput label={qty > 1 ? "Miles/yr ea." : "Miles/yr"}
+                              value={evMiles} min={0} max={150000} step={1000} onChange={setEvMiles} />
+                            <div style={{ minWidth: 140 }}>
+                              <div className="mono" style={{ fontSize: 10.5, color: C.dim, marginBottom: 3 }}>
+                                {fmt(evMiles)} mi/yr {qty > 1 ? "each" : ""} → {fmt(annual)} kWh{qty > 1 ? " total" : ""}
+                              </div>
+                              <Slider value={evMiles} min={0} max={150000} step={1000} onChange={setEvMiles} />
                             </div>
-                            <Slider value={evMiles} min={4000} max={30000} step={1000} onChange={setEvMiles} />
                           </div>
                         ) : (
                           <MiniInput label={qty > 1 ? "kWh/yr ea." : "kWh/yr"} value={unitAnnual} min={0} max={20000} step={50}
