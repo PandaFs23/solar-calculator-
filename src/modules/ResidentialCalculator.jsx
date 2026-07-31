@@ -8,7 +8,7 @@ import {
 
 import { C, TAX_CREDIT, RATE_ESCALATION, EXPORT_RATE, BATT_EFF, EV_MI_PER_KWH, COST_PER_WATT, DEGRADATION, PANEL_SQFT, SOLAR_HOUR_SHARE, BATT_UTIL } from "../data/constants.js";
 import { STATES, STATE_CODES, UTILITIES, INVERTERS, getSchedules } from "../data/utilities.js";
-import { PANEL_PRODUCTS, LEGACY_PANEL_PRODUCTS, DISCONTINUED_PANEL_PRODUCTS, ALL_PANEL_PRODUCTS, INVERTER_PRODUCTS, LEGACY_INVERTER_PRODUCTS, DISCONTINUED_INVERTER_PRODUCTS, ALL_INVERTER_PRODUCTS, BATTERY_PRODUCTS, LEGACY_BATTERY_PRODUCTS, DISCONTINUED_BATTERY_PRODUCTS, ALL_BATTERY_PRODUCTS } from "../data/products.js";
+import { PANEL_PRODUCTS, LEGACY_PANEL_PRODUCTS, DISCONTINUED_PANEL_PRODUCTS, ALL_PANEL_PRODUCTS, INVERTER_PRODUCTS, ALL_INVERTER_PRODUCTS, BATTERY_PRODUCTS, LEGACY_BATTERY_PRODUCTS, DISCONTINUED_BATTERY_PRODUCTS, ALL_BATTERY_PRODUCTS, groupInvertersByBrand, inverterAvailability } from "../data/products.js";
 import { APPLIANCES } from "../data/appliances.js";
 import { SYS_CONFIGS } from "../data/configs.js";
 import { computeResidential } from "../lib/solarMath.js";
@@ -84,6 +84,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   // product selections
   const [panelProdId, setPanelProdId] = useState("q_cells_q_home_next_l_g3_420_435_w");
   const [invProdId, setInvProdId] = useState("enphase_iq8m");
+  const [newInvArch, setNewInvArch] = useState("all"); // 'all' | micro | optimizer | string
   const [battProdId, setBattProdId] = useState("pw3");
   const [battUnits, setBattUnits] = useState(1);
   const [sysConfig, setSysConfig] = useState("custom");
@@ -175,7 +176,10 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const utility = UTILITIES.find((u) => u.id === utilityId);
   const inverter = INVERTERS.find((i) => i.id === existType);
   const panelProd = ALL_PANEL_PRODUCTS.find((p) => p.id === panelProdId);
-  const invProd = INVERTER_PRODUCTS.find((p) => p.id === invProdId);
+  // Looks across ALL inverters, not just current products: the new-array picker
+  // now offers legacy and discontinued models too, so a current-only lookup
+  // would return undefined the moment one was selected.
+  const invProd = ALL_INVERTER_PRODUCTS.find((p) => p.id === invProdId) || INVERTER_PRODUCTS[0];
   const battProd = BATTERY_PRODUCTS.find((p) => p.id === battProdId);
   const panelW = panelProd.watts;
   // recorded existing-system specs (optional — "" = generic)
@@ -198,14 +202,40 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   // label for the existing-panel picker: avoid "Solyndra Solyndra …" when the model name already leads with the brand
   const panelOptLabel = (p) => (p.name.toLowerCase().startsWith(p.mfr.split(" ")[0].toLowerCase()) ? p.name : `${p.mfr} ${p.name}`);
 
-  // Inverter choices for tracked existing arrays — includes legacy and
-  // discontinued models, since that is what is actually on an older roof. The
-  // selected model supplies that system's derate (already device eff × 0.88).
-  const existingInverterOptions = useMemo(() => [
-    { label: "Current products", items: INVERTER_PRODUCTS },
-    { label: "Legacy (older, still supported)", items: LEGACY_INVERTER_PRODUCTS },
-    { label: "Discontinued (no longer sold)", items: DISCONTINUED_INVERTER_PRODUCTS },
-  ].filter((g) => g.items?.length), []);
+  // ---- inverter pickers: brand-grouped, full catalogue ----
+  // Every picker (new array, primary existing, tracked systems) offers the same
+  // 111 models grouped by manufacturer. Availability is shown per option rather
+  // than by grouping, so a brand's current and legacy models sit together the
+  // way a tech thinks about them — while still never implying a discontinued
+  // unit is a current product.
+  const inverterOptLabel = (p) => {
+    const avail = inverterAvailability(p);
+    const tag = avail === "legacy" ? " · legacy" : avail === "discontinued" ? " · discontinued" : "";
+    return `${p.name} — ${p.deviceEff}% device / ${Math.round(p.derate * 1000) / 10}% system${tag}`;
+  };
+  const existingInverterOptions = useMemo(
+    () => groupInvertersByBrand(ALL_INVERTER_PRODUCTS), []
+  );
+  // New array: same catalogue, filtered by the chosen architecture.
+  const newInverterPool = useMemo(
+    () => (newInvArch === "all" ? ALL_INVERTER_PRODUCTS : ALL_INVERTER_PRODUCTS.filter((p) => p.arch === newInvArch)),
+    [newInvArch]
+  );
+  const newInverterOptions = useMemo(() => groupInvertersByBrand(newInverterPool), [newInverterPool]);
+  const newInvCount = newInverterPool.length;
+  const invAvailability = inverterAvailability(invProd);
+
+  // Changing architecture must not leave the select pointing at a model that is
+  // no longer in the list — that renders as a blank control while the model
+  // keeps using the old derate. Snap to the first match instead.
+  const pickNewInvArch = (arch) => {
+    setNewInvArch(arch);
+    if (arch === "all") return;
+    if (invProd?.arch === arch) return;
+    const first = ALL_INVERTER_PRODUCTS.find((p) => p.arch === arch && !p.legacy && !p.discontinued)
+      || ALL_INVERTER_PRODUCTS.find((p) => p.arch === arch);
+    if (first) setInvProdId(first.id);
+  };
 
   // apply a configuration preset: sets battery mode/product/units and backup flags
   const applyConfig = (cfg) => {
@@ -790,15 +820,11 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                   <select value={existInvProdId} onChange={(e) => setExistInvProdId(e.target.value)}
                     style={{ width: "100%", background: C.night, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit", cursor: "pointer" }}>
                     <option value="">Use architecture above</option>
-                    <optgroup label="Current products">
-                      {INVERTER_PRODUCTS.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                    </optgroup>
-                    <optgroup label="Legacy (older, still supported)">
-                      {LEGACY_INVERTER_PRODUCTS.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                    </optgroup>
-                    <optgroup label="Discontinued (no longer sold)">
-                      {DISCONTINUED_INVERTER_PRODUCTS.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                    </optgroup>
+                    {existingInverterOptions.map((g) => (
+                      <optgroup key={g.label} label={g.label}>
+                        {g.items.map((p) => (<option key={p.id} value={p.id}>{inverterOptLabel(p)}</option>))}
+                      </optgroup>
+                    ))}
                   </select>
                   {existInvProd && (
                     <div className="mono" style={{ fontSize: 11.5, color: C.green, marginTop: 4, lineHeight: 1.55 }}>{existInvProd.note}</div>
@@ -986,13 +1012,44 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 </select>
               </Field>
 
+              <Field label="Inverter architecture"
+                hint="Narrows the list below. Microinverters and optimizers handle shade per panel; a string inverter is cheapest but one shaded panel drags its whole string.">
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Toggle active={newInvArch === "all"} onClick={() => pickNewInvArch("all")}>All</Toggle>
+                  {INVERTERS.map((inv) => (
+                    <Toggle key={inv.id} active={newInvArch === inv.id} onClick={() => pickNewInvArch(inv.id)}>{inv.name}</Toggle>
+                  ))}
+                </div>
+                {newInvArch !== "all" && (
+                  <div style={{ fontSize: 12, color: C.dim, marginTop: 8, lineHeight: 1.55 }}>
+                    {INVERTERS.find((i) => i.id === newInvArch)?.note}
+                  </div>
+                )}
+              </Field>
+
               <Field label="Inverter system (new array)" hint={invProd.note}>
                 <select value={invProdId} onChange={(e) => setInvProdId(e.target.value)}
                   style={{ width: "100%", background: C.night, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit", cursor: "pointer" }}>
-                  {INVERTER_PRODUCTS.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} — {p.deviceEff}% device / {Math.round(p.derate * 1000) / 10}% system</option>
+                  {newInverterOptions.map((g) => (
+                    <optgroup key={g.label} label={g.label}>
+                      {g.items.map((p) => (
+                        <option key={p.id} value={p.id}>{inverterOptLabel(p)}</option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
+                <div className="mono" style={{ fontSize: 11, color: C.dim, marginTop: 8, lineHeight: 1.7 }}>
+                  Grouped by brand · {newInvCount} model{newInvCount === 1 ? "" : "s"}
+                  {newInvArch !== "all" && ` matching ${INVERTERS.find((i) => i.id === newInvArch)?.name.toLowerCase()}`}
+                  <br />
+                  Legacy and discontinued models are included and labelled — pick them to quote a
+                  like-for-like replacement or to model equipment already on site.
+                  {invAvailability !== "current" && (
+                    <><br /><span style={{ color: C.copper }}>
+                      Heads up: {invProd.name} is {invAvailability} — not a current product for a new install.
+                    </span></>
+                  )}
+                </div>
               </Field>
             </div>
 

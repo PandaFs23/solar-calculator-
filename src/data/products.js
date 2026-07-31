@@ -325,6 +325,59 @@ export const DISCONTINUED_INVERTER_PRODUCTS = [
 // Current (curated) + legacy + discontinued inverters, for existing-system lookups by id.
 export const ALL_INVERTER_PRODUCTS = [...INVERTER_PRODUCTS, ...LEGACY_INVERTER_PRODUCTS, ...DISCONTINUED_INVERTER_PRODUCTS];
 
+// ---- brand grouping for the inverter pickers ----
+// Inverter rows carry no `mfr` field (panels do). Names all lead with the
+// manufacturer, but "first word" guessing gets three things wrong, so the
+// mapping is explicit and lives here with the data rather than in the UI:
+//   - multi-word brands: "ABB-Fimer", "Outback Power", "Advanced Energy",
+//     "Ginlong Solis", "Delta Eltek"
+//   - "Hoymiles" (current) vs "HoyMiles" (legacy) — same company, spelled two
+//     ways across generations; first-word grouping would split it in two
+//   - "Delta Eltek" is Delta (acquired 2015) and belongs in the same group
+// Longest-prefix-first so "Delta Eltek" is tested before "Delta".
+const INVERTER_BRAND_PREFIXES = [
+  "ABB-Fimer", "Advanced Energy", "Outback Power", "Ginlong Solis", "Delta Eltek",
+  "SolarEdge", "Sol-Ark", "Enphase", "HoyMiles", "Hoymiles", "Generac", "Fronius",
+  "Sungrow", "Growatt", "Tesla", "Delta", "KACO", "SMA", "EG4",
+].sort((a, b) => b.length - a.length);
+
+export function inverterBrand(p) {
+  const name = p?.name || "";
+  const hit = INVERTER_BRAND_PREFIXES.find((b) => name.toLowerCase().startsWith(b.toLowerCase()));
+  if (!hit) return name.split(" ")[0] || "Other";
+  const key = hit.toLowerCase();
+  if (key === "delta eltek") return "Delta";
+  if (key === "hoymiles") return "Hoymiles";
+  return hit;
+}
+
+// Availability tag so a brand group can still say what's current vs not —
+// grouping by brand must not hide that a model is out of production.
+export function inverterAvailability(p) {
+  if (p?.discontinued) return "discontinued";
+  if (p?.legacy) return "legacy";
+  return "current";
+}
+
+// [{ label: "Enphase", items: [...] }, …] sorted by brand, current models
+// first within each brand.
+export function groupInvertersByBrand(list) {
+  const order = { current: 0, legacy: 1, discontinued: 2 };
+  const map = new Map();
+  (list || []).forEach((p) => {
+    const b = inverterBrand(p);
+    if (!map.has(b)) map.set(b, []);
+    map.get(b).push(p);
+  });
+  return [...map.entries()]
+    .map(([label, items]) => ({
+      label,
+      items: items.slice().sort((a, b) =>
+        order[inverterAvailability(a)] - order[inverterAvailability(b)] || a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
 
 export const BATTERY_PRODUCTS = [
   { id: "pw3", name: "Tesla Powerwall 3", unitKwh: 13.5, unitKw: 11.5, rtEff: 97.5, price: 13500, note: "Built-in 11.5 kW solar inverter · stackable to 4 · 10-yr unlimited-cycle warranty · 97.5% round-trip · price is a $1,000/kWh installed ESTIMATE" },

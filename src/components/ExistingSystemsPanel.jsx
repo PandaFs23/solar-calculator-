@@ -104,7 +104,10 @@ function SysCard({ sys, index, onChange, onDelete, inverterOptions }) {
             {inverterOptions.map((g) => (
               <optgroup key={g.label} label={g.label}>
                 {g.items.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name} — {(p.derate * 100).toFixed(1)}% system</option>
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {(p.derate * 100).toFixed(1)}% system
+                    {p.discontinued ? " · discontinued" : p.legacy ? " · legacy" : ""}
+                  </option>
                 ))}
               </optgroup>
             ))}
