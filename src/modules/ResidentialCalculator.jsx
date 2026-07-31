@@ -352,12 +352,15 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const activeOverrides = viewMode === "advanced" ? advOverrides : undefined;
   const activeMonthlyUsage = (viewMode === "advanced" && monthlyUsageKwh.some((v) => v > 0)) ? monthlyUsageKwh : null;
   // Tracked systems are NOT advanced-only — a second array is a fact about the
-  // home, not an expert tuning knob. Blank rows are filtered out by
+  // home, not an expert tuning knob. But they ARE gated on hasExisting: the
+  // tracker only renders inside that section, and hidden rows must never move
+  // the numbers. "Home has existing solar = off" means no existing solar at
+  // all, additional arrays included. Blank rows are filtered out by
   // toModelSystems, so an untouched tracker contributes exactly nothing and the
   // Basic default stays on the CLAUDE.md regression.
   const activeAddSystems = useMemo(
-    () => toModelSystems(additionalSystems, ALL_INVERTER_PRODUCTS),
-    [additionalSystems]
+    () => (hasExisting ? toModelSystems(additionalSystems, ALL_INVERTER_PRODUCTS) : []),
+    [hasExisting, additionalSystems]
   );
 
   const r = useMemo(() => computeResidential({
@@ -712,22 +715,27 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                     )}
                   </div>
                 </Field>
-              </Section>
 
-              {/* ---- additional existing arrays (entries 2..5) ---- */}
-              <Field label="More than one existing array?"
-                hint={`The card above is the primary array. Add up to ${MAX_SYSTEMS - 1} more — a garage roof, a later expansion on a different inverter. Their production sums into the existing offset. Saved in this browser.`}>
-                <ExistingSystemsPanel
-                  systems={additionalSystems}
-                  setSystems={setAdditionalSystems}
-                  inverterOptions={existingInverterOptions}
-                  maxAdditional={MAX_SYSTEMS - (hasExisting ? 1 : 0)}
-                  primaryCounted={hasExisting}
-                  aggregateKwh={aggregateProduction(
-                    additionalSystems, ALL_INVERTER_PRODUCTS,
-                    r.pshDaysYr, activeOverrides?.degradation ?? DEGRADATION
-                  )} />
-              </Field>
+                {/* ---- additional existing arrays (entries 2..5) ----
+                     Lives inside the section so it only appears once the home
+                     is marked as having existing solar. Section renders its
+                     children only when `on`, and the math is gated on the same
+                     flag — see activeAddSystems — so nothing can contribute
+                     production while hidden. ---- */}
+                <Field label="More than one system?"
+                  hint={`The fields above describe the primary array. Add up to ${MAX_SYSTEMS - 1} more — a garage roof, a later expansion on a different inverter. Their production sums into the existing offset. Saved in this browser.`}>
+                  <ExistingSystemsPanel
+                    systems={additionalSystems}
+                    setSystems={setAdditionalSystems}
+                    inverterOptions={existingInverterOptions}
+                    maxAdditional={MAX_SYSTEMS - 1}
+                    primaryCounted
+                    aggregateKwh={aggregateProduction(
+                      additionalSystems, ALL_INVERTER_PRODUCTS,
+                      r.pshDaysYr, activeOverrides?.degradation ?? DEGRADATION
+                    )} />
+                </Field>
+              </Section>
 
               {/* ---- battery ---- */}
               <div style={{ margin: "0 -24px 22px", padding: "18px 24px", background: battMode !== "none" ? C.tealSoft : "transparent", borderBottom: `1px solid ${C.line}`, transition: "background .25s" }}>
