@@ -95,11 +95,23 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const [existProdOverride, setExistProdOverride] = useState(null);
   const [existPanelProdId, setExistPanelProdId] = useState(""); // "" = not specified / generic
   const [existInvProdId, setExistInvProdId] = useState("");     // "" = use the generic architecture toggle
+  // Size basis for the primary array, mirroring the tracked-systems rule: one
+  // side is entered, the other is derived, so they can never drift. "kw" = the
+  // slider is truth; "panels" = count × wattage is truth. The latter is how a
+  // homeowner who doesn't know the kW rating actually describes their system
+  // ("fourteen 400 W panels"), and it works with the panel model left generic.
+  const [existSizeBasis, setExistSizeBasis] = useState("kw"); // 'kw' | 'panels'
+  const [existPanelCount, setExistPanelCount] = useState(14);
+  const [existPanelWCustom, setExistPanelWCustom] = useState(400);
 
   // battery
   const [battMode, setBattMode] = useState("none"); // 'none' | 'existing' | 'new'
-  const [battKwh, setBattKwh] = useState(13.5);
   const [existBattProdId, setExistBattProdId] = useState(""); // "" = not specified / generic
+  // Existing storage is counted the way it is installed: N units × capacity
+  // each. Replaces a raw total-kWh slider, which asked the rep to do the
+  // multiplication and made "two Powerwalls" awkward to express.
+  const [existBattUnits, setExistBattUnits] = useState(1);
+  const [existBattUnitKwh, setExistBattUnitKwh] = useState(13.5); // per unit, when generic
 
   // report
   const [customerName, setCustomerName] = useState("");
@@ -163,7 +175,18 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const existPanelProd = ALL_PANEL_PRODUCTS.find((p) => p.id === existPanelProdId) || null;
   const existInvProd = ALL_INVERTER_PRODUCTS.find((p) => p.id === existInvProdId) || null;
   const existBattProd = ALL_BATTERY_PRODUCTS.find((p) => p.id === existBattProdId) || null;
-  const existPanelW = existPanelProd ? existPanelProd.watts : panelW; // count existing panels off the real module when known
+  // Existing panel wattage: the real module's spec when a model is recorded,
+  // otherwise whatever the rep types. Previously this silently fell back to the
+  // NEW array's panel wattage, which had nothing to do with what's on the roof.
+  const existPanelW = existPanelProd ? existPanelProd.watts : existPanelWCustom;
+  // Effective existing capacity — derived from panels × watts when that's the
+  // chosen basis. This is what the model and every readout use.
+  const effExistKw = existSizeBasis === "panels"
+    ? (existPanelCount * existPanelW) / 1000
+    : existKw;
+  // Effective existing storage: units × per-unit capacity.
+  const existBattUnitSize = existBattProd ? existBattProd.unitKwh : existBattUnitKwh;
+  const effBattKwh = existBattUnits * existBattUnitSize;
   const existInverter = existInvProd || inverter; // a recorded inverter model overrides the generic architecture derate
   // label for the existing-panel picker: avoid "Solyndra Solyndra …" when the model name already leads with the brand
   const panelOptLabel = (p) => (p.name.toLowerCase().startsWith(p.mfr.split(" ")[0].toLowerCase()) ? p.name : `${p.mfr} ${p.name}`);
@@ -366,15 +389,15 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
   const r = useMemo(() => computeResidential({
     rate, inputMode, annualKwh, bill,
     loads, loadVals, evMiles,
-    hasExisting, existKw, existAge, existProdOverride, inverter: existInverter, existPanelW,
+    hasExisting, existKw: effExistKw, existAge, existProdOverride, inverter: existInverter, existPanelW,
     sunHrs, panels, panelW, invProd, sizingBasis, targetKw,
-    battMode, battUnits, battProd, battKwh,
+    battMode, battUnits, battProd, battKwh: effBattKwh,
     monthlyUsageKwh: activeMonthlyUsage,
     monthlyIrradiance: activeMonthlyIrr,
     shadeFactor,
     additionalSystems: activeAddSystems,
     overrides: activeOverrides,
-  }), [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, existKw, existType, existAge, existProdOverride, existInverter, existPanelW, sizingBasis, targetKw, battMode, battKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits, activeMonthlyUsage, activeMonthlyIrr, shadeFactor, activeAddSystems, activeOverrides]);
+  }), [bill, rate, sunHrs, panels, panelW, inputMode, annualKwh, hasExisting, effExistKw, existType, existAge, existProdOverride, existInverter, existPanelW, sizingBasis, targetKw, battMode, effBattKwh, loads, evMiles, loadVals, panelProd, invProd, battProd, battUnits, activeMonthlyUsage, activeMonthlyIrr, shadeFactor, activeAddSystems, activeOverrides]);
 
   // ---- Feasibility check (advanced view) ----
   const invArch = existType === "micro" ? "micro" : "string";
@@ -649,10 +672,45 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 on={hasExisting} setOn={setHasExisting} color={C.green} fill={C.greenSoft}
                 icon={<PlusCircle size={16} color={hasExisting ? C.green : C.dim} />}
                 title="Home has existing solar">
-                <Field label={`Existing system size: ${existKw.toFixed(1)} kW`} hint="From the original install docs or inverter monitoring app">
-                  <Slider value={existKw} min={1} max={20} step={0.5} onChange={setExistKw} />
+                <Field label="How do you know the existing system's size?"
+                  hint="Don't know the kW rating? Count the panels on the roof and enter their wattage — that's enough to size everything else.">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Toggle active={existSizeBasis === "kw"} onClick={() => setExistSizeBasis("kw")} color={C.green}>System kW</Toggle>
+                    <Toggle active={existSizeBasis === "panels"} onClick={() => setExistSizeBasis("panels")} color={C.green}>Panels × watts</Toggle>
+                  </div>
                 </Field>
-                <Field label="Existing panel model" hint="Record the actual panels on the roof — includes older & discontinued models. Sets how many existing panels the size implies.">
+
+                {existSizeBasis === "kw" ? (
+                  <Field label={`Existing system size: ${existKw.toFixed(1)} kW`} hint="From the original install docs or inverter monitoring app">
+                    <Slider value={existKw} min={1} max={20} step={0.5} onChange={setExistKw} />
+                    <div className="mono" style={{ fontSize: 11.5, color: C.dim, marginTop: 6 }}>
+                      ≈ {r.existPanels} panels at {existPanelW} W each
+                    </div>
+                  </Field>
+                ) : (
+                  <Field label={`Existing array: ${existPanelCount} × ${existPanelW} W = ${effExistKw.toFixed(2)} kW`}
+                    hint="Count what's on the roof and enter the wattage off the panel label. The kW rating is computed — no need to look it up.">
+                    <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+                      <MiniInput label="NUMBER OF PANELS" value={existPanelCount} min={1} max={200} step={1} onChange={setExistPanelCount} />
+                      {existPanelProd ? (
+                        <div>
+                          <div className="mono" style={{ fontSize: 10.5, color: C.dim, marginBottom: 3 }}>WATTS PER PANEL</div>
+                          <div className="mono" style={{ fontSize: 13, color: C.green, padding: "5px 8px", border: `1px dashed ${C.line}`, borderRadius: 6, width: 78, boxSizing: "border-box" }}>
+                            {existPanelW} W
+                          </div>
+                          <div className="mono" style={{ fontSize: 10, color: C.dim, marginTop: 3 }}>from model</div>
+                        </div>
+                      ) : (
+                        <MiniInput label="WATTS PER PANEL" value={existPanelWCustom} min={50} max={800} step={5} onChange={setExistPanelWCustom} />
+                      )}
+                    </div>
+                    <div className="mono" style={{ fontSize: 11.5, color: C.green, marginTop: 8, lineHeight: 1.6 }}>
+                      = {effExistKw.toFixed(2)} kW DC on {existInverter.name ? existInverter.name.toLowerCase() : "the selected"} setup
+                    </div>
+                  </Field>
+                )}
+                <Field label="Existing panel model"
+                  hint="Record the actual panels on the roof — includes older & discontinued models. Leave it on “Not sure / generic” and you can type the wattage yourself above.">
                   <select value={existPanelProdId} onChange={(e) => setExistPanelProdId(e.target.value)}
                     style={{ width: "100%", background: C.night, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit", cursor: "pointer" }}>
                     <option value="">Not sure / generic</option>
@@ -770,9 +828,9 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                       </>
                     ) : (
                       <>
-                        <Field label="Existing battery model" hint="Pick the installed battery to record its specs and set capacity — or leave generic and just set kWh below.">
+                        <Field label="Existing battery model" hint="Pick the installed battery to record its specs and per-unit capacity — or leave generic and type the kWh per unit below.">
                           <select value={existBattProdId}
-                            onChange={(e) => { const id = e.target.value; setExistBattProdId(id); const bp = ALL_BATTERY_PRODUCTS.find((p) => p.id === id); if (bp) setBattKwh(bp.unitKwh); }}
+                            onChange={(e) => { const id = e.target.value; setExistBattProdId(id); const bp = ALL_BATTERY_PRODUCTS.find((p) => p.id === id); if (bp) setExistBattUnitKwh(bp.unitKwh); }}
                             style={{ width: "100%", background: C.night, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 13.5, fontFamily: "inherit", cursor: "pointer" }}>
                             <option value="">Not sure / generic</option>
                             <optgroup label="Current products">
@@ -795,13 +853,29 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                             <div className="mono" style={{ fontSize: 11.5, color: C.teal, marginTop: 4, lineHeight: 1.55 }}>{existBattProd.note}</div>
                           )}
                         </Field>
-                        <Field label={`Existing battery capacity: ${battKwh.toFixed(1)} kWh`}
-                          hint="Common sizes — Powerwall 3: 13.5 · Enphase 5P: 5.0 · FranklinWH: 15.0 · stack for more">
-                          <Slider value={battKwh} min={5} max={40} step={0.5} onChange={setBattKwh} />
-                          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                            {[5, 13.5, 27, 40].map((k) => (
-                              <Toggle key={k} active={battKwh === k} onClick={() => setBattKwh(k)} color={C.teal} small>{k} kWh</Toggle>
+                        <Field label={`Existing storage: ${existBattUnits} × ${existBattUnitSize} kWh = ${effBattKwh.toFixed(1)} kWh`}
+                          hint="Count the units on the wall. Capacity per unit comes from the model above, or type it if the model is generic — Powerwall 3: 13.5 · Enphase 5P: 5.0 · FranklinWH: 15.0">
+                          <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 10 }}>
+                            <MiniInput label="HOW MANY BATTERIES" value={existBattUnits} min={1} max={12} step={1} onChange={setExistBattUnits} />
+                            {existBattProd ? (
+                              <div>
+                                <div className="mono" style={{ fontSize: 10.5, color: C.dim, marginBottom: 3 }}>kWh PER UNIT</div>
+                                <div className="mono" style={{ fontSize: 13, color: C.teal, padding: "5px 8px", border: `1px dashed ${C.line}`, borderRadius: 6, width: 78, boxSizing: "border-box" }}>
+                                  {existBattProd.unitKwh}
+                                </div>
+                                <div className="mono" style={{ fontSize: 10, color: C.dim, marginTop: 3 }}>from model</div>
+                              </div>
+                            ) : (
+                              <MiniInput label="kWh PER UNIT" value={existBattUnitKwh} min={1} max={60} step={0.5} onChange={setExistBattUnitKwh} />
+                            )}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            {[1, 2, 3, 4].map((n) => (
+                              <Toggle key={n} active={existBattUnits === n} onClick={() => setExistBattUnits(n)} color={C.teal} small>{n} unit{n > 1 ? "s" : ""}</Toggle>
                             ))}
+                          </div>
+                          <div className="mono" style={{ fontSize: 11.5, color: C.teal, marginTop: 10 }}>
+                            Total usable storage on site: {effBattKwh.toFixed(1)} kWh
                           </div>
                         </Field>
                       </>
@@ -883,7 +957,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
                 <span className="mono" style={{ fontSize: 12, letterSpacing: 2, color: C.dim }}>YOUR SYSTEM</span>
                 <span className="mono" style={{ fontSize: 13, color: C.gold }}>
-                  {hasExisting && `${r.existPanels} existing + `}{r.nPanels} new · {fmt(r.actualKw + (hasExisting ? existKw : 0), 1)} kW
+                  {hasExisting && `${r.existPanels} existing + `}{r.nPanels} new · {fmt(r.actualKw + (hasExisting ? effExistKw : 0), 1)} kW
                 </span>
               </div>
 
@@ -964,7 +1038,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
               {/* battery units */}
               {battMode !== "none" && (() => {
                 const unitSize = battMode === "new" ? battProd.unitKwh : 13.5;
-                const unitCount = battMode === "new" ? battUnits : Math.ceil(battKwh / unitSize);
+                const unitCount = battMode === "new" ? battUnits : existBattUnits;
                 const total = r.battKwhEff;
                 return (
                   <div style={{ marginTop: 16 }}>
@@ -998,11 +1072,11 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 <div className="mono" style={{ fontSize: 12.5, lineHeight: 1.9 }}>
                   <span style={{ color: C.gold }}>▸ {r.nPanels} × {panelProd.mfr} {panelProd.name} ({panelW} W)</span> = {fmt(r.actualKw, 1)} kW new solar
                   {r.nPanels > 0 && <><br /><span style={{ color: C.gold }}>▸ {invProd.name}</span></>}
-                  {hasExisting && <><br /><span style={{ color: C.green }}>▸ {r.existPanels} panels existing{existPanelProd ? ` × ${panelOptLabel(existPanelProd)}` : ""}</span> = {existKw.toFixed(1)} kW already on the roof</>}
+                  {hasExisting && <><br /><span style={{ color: C.green }}>▸ {r.existPanels} panels existing{existPanelProd ? ` × ${panelOptLabel(existPanelProd)}` : ` × ${existPanelW} W`}</span> = {effExistKw.toFixed(1)} kW already on the roof</>}
                   {hasExisting && existInvProd && <><br /><span style={{ color: C.green }}>▸ {existInvProd.name}</span> (existing inverter)</>}
                   {battMode !== "none" && (battMode === "new"
                     ? <><br /><span style={{ color: C.teal }}>▸ {battUnits} × {battProd.name}</span> = {r.battKwhEff.toFixed(1)} kWh / {(battUnits * battProd.unitKw).toFixed(1)} kW output (new)</>
-                    : <><br /><span style={{ color: C.teal }}>▸ {battKwh} kWh existing battery{existBattProd ? ` (${existBattProd.name})` : ""}</span></>)}
+                    : <><br /><span style={{ color: C.teal }}>▸ {existBattUnits} × {existBattUnitSize} kWh existing battery{existBattProd ? ` (${existBattProd.name})` : ""}</span> = {effBattKwh.toFixed(1)} kWh</>)}
                   <br /><span style={{ color: C.dim }}>▸ Covers {fmt(Math.min(r.offsetPct, 999))}% of {fmt(r.sizingUsage)} kWh/yr{r.loadsFuture > 0 ? " (incl. future loads)" : ""}</span>
                 </div>
               </div>
@@ -1325,7 +1399,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
             )}
             <Stat icon={<Zap size={16} color={C.gold} />} label="New system size" value={`${fmt(r.actualKw, 1)} kW`} sub={`${r.nPanels} × ${panelW} W panels`} />
             {hasExisting && (
-              <Stat icon={<Sun size={16} color={C.green} />} label="Existing production" value={`${fmt(r.existProd)} kWh`} sub={`${existKw.toFixed(1)} kW ${inverter.name.toLowerCase()}, ${existAge} yrs old`} accent={C.green} />
+              <Stat icon={<Sun size={16} color={C.green} />} label="Existing production" value={`${fmt(r.existProd)} kWh`} sub={`${effExistKw.toFixed(1)} kW ${inverter.name.toLowerCase()}, ${existAge} yrs old`} accent={C.green} />
             )}
             {battMode !== "none" && (
               <Stat icon={<BatteryCharging size={16} color={C.teal} />} label={battMode === "new" ? "New battery" : "Existing battery"} value={`${r.battKwhEff.toFixed(1)} kWh`}
@@ -1396,9 +1470,9 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
           <div>
             {r.nPanels > 0 && <>• <b>{r.nPanels} × {panelProd.mfr} {panelProd.name}</b> ({panelW} W, {panelProd.eff}% efficiency) = <b>{fmt(r.actualKw, 1)} kW</b> new solar<br /></>}
             {r.nPanels > 0 && <>• <b>{invProd.name}</b> — {invProd.deviceEff}% device efficiency<br /></>}
-            {hasExisting && <>• Existing: {r.existPanels} panels ({existKw.toFixed(1)} kW, {inverter.name.toLowerCase()}, {existAge} yrs) producing ~{fmt(r.existProd)} kWh/yr<br /></>}
+            {hasExisting && <>• Existing: {r.existPanels} panels × {existPanelW} W ({effExistKw.toFixed(1)} kW, {inverter.name.toLowerCase()}, {existAge} yrs) producing ~{fmt(r.existProd)} kWh/yr<br /></>}
             {battMode === "new" && <>• <b>{battUnits} × {battProd.name}</b> = {r.battKwhEff.toFixed(1)} kWh storage / {(battUnits * battProd.unitKw).toFixed(1)} kW output<br /></>}
-            {battMode === "existing" && <>• Existing battery: {battKwh} kWh<br /></>}
+            {battMode === "existing" && <>• Existing battery: {existBattUnits} × {existBattUnitSize} kWh = {effBattKwh.toFixed(1)} kWh{existBattProd ? ` (${existBattProd.name})` : ""}<br /></>}
             • Estimated bill offset: <b>{fmt(Math.min(r.offsetPct, 999))}%</b> · New array roof area: ~{fmt(r.roofArea)} sq ft
           </div>
 
