@@ -35,6 +35,12 @@ jobs:
       - name: Build production assets
         run: npm run build
         env:
+          # Preferred names (see .env.example): PRIMARY does geocoding +
+          # autocomplete, SECONDARY is the HTTP 429 retry target.
+          VITE_GEOAPIFY_KEY_PRIMARY: ${{ secrets.VITE_GEOAPIFY_KEY_PRIMARY }}
+          VITE_GEOAPIFY_KEY_SECONDARY: ${{ secrets.VITE_GEOAPIFY_KEY_SECONDARY }}
+          # Legacy names still resolve in lib/geo.js, so an existing pair of
+          # repo secrets keeps working without being renamed.
           VITE_GEOAPIFY_KEY: ${{ secrets.VITE_GEOAPIFY_KEY }}
           VITE_GEOAPIFY_AUTOCOMPLETE_KEY: ${{ secrets.VITE_GEOAPIFY_AUTOCOMPLETE_KEY }}
 
