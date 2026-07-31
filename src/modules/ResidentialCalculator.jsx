@@ -163,8 +163,14 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
     setLoads((p) => ({ ...p, [id]: { status: "no", backup: false, ...p[id], ...patch } }));
   const setLoadVal = (id, patch) =>
     setLoadVals((p) => ({ ...p, [id]: { ...p[id], ...patch } }));
-  const getWatts = (a) => loadVals[a.id]?.watts ?? a.watts;
-  const getKwhYr = (a) => (a.ev ? evMiles / EV_MI_PER_KWH : (loadVals[a.id]?.kwhYr ?? a.kwhYr));
+  // Per-unit vs total — must mirror lib/solarMath.js exactly, or the table
+  // would disagree with the calculation. The Watts / kWh inputs bind to the
+  // UNIT values; everything that sums or sizes uses the totals.
+  const getQty = (a) => Math.max(1, Math.round(Number(loads[a.id]?.qty) || 1));
+  const getUnitWatts = (a) => loadVals[a.id]?.watts ?? a.watts;
+  const getUnitKwhYr = (a) => (a.ev ? evMiles / EV_MI_PER_KWH : (loadVals[a.id]?.kwhYr ?? a.kwhYr));
+  const getWatts = (a) => getUnitWatts(a) * getQty(a);
+  const getKwhYr = (a) => getUnitKwhYr(a) * getQty(a);
 
   const utility = UTILITIES.find((u) => u.id === utilityId);
   const inverter = INVERTERS.find((i) => i.id === existType);
@@ -1277,7 +1283,10 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
               {APPLIANCES.map((a) => {
                 const l = loads[a.id] || { status: "no", backup: false };
                 const active = l.status !== "no";
-                const w = getWatts(a);
+                const qty = getQty(a);
+                const unitW = getUnitWatts(a);            // what the inputs edit
+                const unitAnnual = Math.round(getUnitKwhYr(a));
+                const w = getWatts(a);                    // × qty — what the model uses
                 const annual = Math.round(getKwhYr(a));
                 return (
                   <div key={a.id} style={{
@@ -1287,23 +1296,43 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                     border: `1px solid ${active ? (l.status === "future" ? C.gold + "66" : C.line) : "transparent"}`,
                   }}>
                     <div style={{ flex: "1 1 170px", minWidth: 150 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 500 }}>{a.name}</div>
+                      <div style={{ fontSize: 13.5, fontWeight: 500, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        {a.name}
+                        {qty > 1 && (
+                          <span className="mono" style={{
+                            fontSize: 10.5, fontWeight: 600, color: C.night, background: C.gold,
+                            borderRadius: 999, padding: "1px 7px", letterSpacing: 0.5,
+                          }}>×{qty}</span>
+                        )}
+                      </div>
                       <div className="mono" style={{ fontSize: 11, color: C.dim }}>
-                        {fmt(w)} W · ~{fmt(annual)} kWh/yr
+                        {qty > 1 ? (
+                          <>
+                            {fmt(unitW)} W · ~{fmt(unitAnnual)} kWh/yr each
+                            <br />
+                            <span style={{ color: C.gold }}>{fmt(w)} W · ~{fmt(annual)} kWh/yr total</span>
+                          </>
+                        ) : (
+                          <>{fmt(w)} W · ~{fmt(annual)} kWh/yr</>
+                        )}
                       </div>
                     </div>
 
                     {active && (
                       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                        <MiniInput label="Watts" value={w} min={10} max={20000} step={50}
+                        <MiniInput label="How many" value={qty} min={1} max={50} step={1}
+                          onChange={(v) => setLoad(a.id, { qty: Math.max(1, Math.round(v)) })} />
+                        <MiniInput label={qty > 1 ? "Watts ea." : "Watts"} value={unitW} min={10} max={20000} step={50}
                           onChange={(v) => setLoadVal(a.id, { watts: v })} />
                         {a.ev ? (
                           <div style={{ minWidth: 140 }}>
-                            <div className="mono" style={{ fontSize: 10.5, color: C.dim, marginBottom: 3 }}>{fmt(evMiles)} mi/yr → {fmt(annual)} kWh</div>
+                            <div className="mono" style={{ fontSize: 10.5, color: C.dim, marginBottom: 3 }}>
+                              {fmt(evMiles)} mi/yr {qty > 1 ? "each" : ""} → {fmt(annual)} kWh
+                            </div>
                             <Slider value={evMiles} min={4000} max={30000} step={1000} onChange={setEvMiles} />
                           </div>
                         ) : (
-                          <MiniInput label="kWh/yr" value={annual} min={0} max={20000} step={50}
+                          <MiniInput label={qty > 1 ? "kWh/yr ea." : "kWh/yr"} value={unitAnnual} min={0} max={20000} step={50}
                             onChange={(v) => setLoadVal(a.id, { kwhYr: v })} />
                         )}
                       </div>
@@ -1355,7 +1384,8 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", marginBottom: 10 }}>
                   {r.backupLoads.map((a) => (
                     <span key={a.id} className="mono" style={{ fontSize: 12, color: C.text }}>
-                      {a.name} <span style={{ color: C.dim }}>({fmt(a.watts)} W)</span>
+                      {a.name}{a.qty > 1 && <span style={{ color: C.gold }}> ×{a.qty}</span>}{" "}
+                      <span style={{ color: C.dim }}>({fmt(a.watts)} W{a.qty > 1 ? ` = ${a.qty}×${fmt(a.unitWatts)}` : ""})</span>
                     </span>
                   ))}
                 </div>
@@ -1520,7 +1550,7 @@ export default function ResidentialCalculator({ onSwitchMode, onLocated, suppres
             <>
               <div style={{ fontWeight: 700, fontSize: 14, borderBottom: "1px solid #ccc", margin: "14px 0 6px" }}>Backup Load Statement</div>
               <div>
-                Backed-up loads: {r.backupLoads.map((a) => `${a.name} (${fmt(a.watts)} W)`).join(", ")}<br />
+                Backed-up loads: {r.backupLoads.map((a) => `${a.name}${a.qty > 1 ? ` ×${a.qty}` : ""} (${fmt(a.watts)} W)`).join(", ")}<br />
                 Peak backed-up load: <b>{(r.backupWatts / 1000).toFixed(1)} kW</b> vs {r.invKw.toFixed(1)} kW battery output — <b>{r.backupOk ? "supported simultaneously" : "exceeds output; stagger heavy loads or add capacity"}</b><br />
                 Estimated runtime on a full charge: <b>~{fmt(Math.min(r.backupHrsCritical, 999))} hours</b> (longer with daytime solar recharge)
               </div>

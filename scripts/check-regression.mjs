@@ -193,5 +193,48 @@ const derateOk = withInv[0].inverterDerate === invProd.derate && mapped[0].inver
 if (!derateOk) failed++;
 console.log(`${derateOk ? "✓" : "✗"} recorded inverter sets derate: generic ${mapped[0].inverterDerate} → IQ8M ${withInv[0].inverterDerate}`);
 
+// --- Household load quantities ---
+// A count of 1 (or absent) must behave exactly as before, and N units must
+// scale both annual energy and the outage draw linearly.
+console.log("\nHousehold load quantity scales energy and backup draw\n");
+const loadsBase = { fridge: { status: "now", backup: true } };
+const one = computeResidential({ ...baseline, inputMode: "loads", loads: loadsBase });
+const implicit = computeResidential({
+  ...baseline, inputMode: "loads",
+  loads: { fridge: { status: "now", backup: true, qty: 1 } },
+});
+const three = computeResidential({
+  ...baseline, inputMode: "loads",
+  loads: { fridge: { status: "now", backup: true, qty: 3 } },
+});
+
+const absentIsOne = one.loadsNow === implicit.loadsNow && one.backupWatts === implicit.backupWatts;
+if (!absentIsOne) failed++;
+console.log(`${absentIsOne ? "✓" : "✗"} absent qty behaves as 1 (${one.loadsNow} kWh, ${one.backupWatts} W)`);
+
+const energyScales = Math.abs(three.loadsNow - one.loadsNow * 3) < 0.001;
+if (!energyScales) failed++;
+console.log(`${energyScales ? "✓" : "✗"} annual energy ×3: ${one.loadsNow} → ${three.loadsNow} kWh`);
+
+const wattsScale = three.backupWatts === one.backupWatts * 3;
+if (!wattsScale) failed++;
+console.log(`${wattsScale ? "✓" : "✗"} backup draw ×3: ${one.backupWatts} → ${three.backupWatts} W`);
+
+// The per-unit spec must survive — the UI's Watts input binds to it, so if the
+// model folded qty into the unit value the field would multiply on every edit.
+const unitIntact = three.backupLoads[0].unitWatts === one.backupLoads[0].unitWatts
+  && three.backupLoads[0].qty === 3;
+if (!unitIntact) failed++;
+console.log(`${unitIntact ? "✓" : "✗"} per-unit spec preserved alongside the total (${three.backupLoads[0].unitWatts} W each × ${three.backupLoads[0].qty})`);
+
+// A junk qty must not poison the model.
+const junk = computeResidential({
+  ...baseline, inputMode: "loads",
+  loads: { fridge: { status: "now", backup: true, qty: 0 } },
+});
+const junkSafe = junk.loadsNow === one.loadsNow;
+if (!junkSafe) failed++;
+console.log(`${junkSafe ? "✓" : "✗"} qty 0 clamps to 1 rather than zeroing the load`);
+
 console.log(failed === 0 ? "\nAll regression checks passed." : `\n${failed} check(s) FAILED.`);
 process.exit(failed === 0 ? 0 : 1);

@@ -54,8 +54,17 @@ export function computeResidential({
     solarHourShare: overrides?.solarHourShare ?? SOLAR_HOUR_SHARE,
   };
 
-  const getWatts = (a) => loadVals[a.id]?.watts ?? a.watts;
-  const getKwhYr = (a) => (a.ev ? evMiles / EV_MI_PER_KWH : (loadVals[a.id]?.kwhYr ?? a.kwhYr));
+  // Household loads are counted PER UNIT × QUANTITY. A home can have three TVs
+  // or two fridges, and both the annual energy and the outage draw scale with
+  // the count. The unit accessors stay separate from the totals because the
+  // Watts / kWh inputs in the UI edit the per-unit figure — multiplying inside
+  // them would write the multiplied value back as the new unit spec.
+  const getQty = (a) => Math.max(1, Math.round(Number(loads[a.id]?.qty) || 1));
+  const getUnitWatts = (a) => loadVals[a.id]?.watts ?? a.watts;
+  // EV miles are per vehicle, so qty scales this the same as everything else.
+  const getUnitKwhYr = (a) => (a.ev ? evMiles / EV_MI_PER_KWH : (loadVals[a.id]?.kwhYr ?? a.kwhYr));
+  const getWatts = (a) => getUnitWatts(a) * getQty(a);
+  const getKwhYr = (a) => getUnitKwhYr(a) * getQty(a);
 
   const safeRate = Math.max(rate, 0.01);
 
@@ -161,7 +170,7 @@ export function computeResidential({
   const backupLoads = APPLIANCES.filter((a) => {
     const l = loads[a.id];
     return l && l.status !== "no" && l.backup;
-  }).map((a) => ({ ...a, watts: getWatts(a), annual: loadKwh(a) }));
+  }).map((a) => ({ ...a, qty: getQty(a), unitWatts: getUnitWatts(a), watts: getWatts(a), annual: loadKwh(a) }));
   const backupWatts = backupLoads.reduce((s, a) => s + a.watts, 0);
   const backupDailyKwh = backupLoads.reduce((s, a) => s + a.annual, 0) / 365;
   const invKw = battMode === "new" ? battUnits * battProd.unitKw : battKwhEff * BATT_KW_PER_KWH;
