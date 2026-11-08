@@ -10,7 +10,8 @@
     "api": "node server.js",
     "lint": "eslint src/",
     "check-links": "node scripts/check-links.mjs",
-    "check-regression": "node scripts/check-regression.mjs"
+    "check-regression": "node scripts/check-regression.mjs",
+    "check-feasibility": "node scripts/check-feasibility.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
