@@ -79,7 +79,12 @@ export function checkFeasibility({
   }
 
   // ---- Rule: AC output current, breaker, wire ----
-  const acAmps = (actualKw * 1000) / (serviceVoltage || 240);
+  // Three-phase AC line current is P / (√3 · V): a 480 V 3-phase
+  // service carries this power per-leg, so AC amps must be divided by the
+  // √3 factor or every commercial quote overstates current, breaker
+  // size, and conductor by exactly that factor (1.73x).
+  const isThreePhase = invArch === "threephase";
+  const acAmps = (actualKw * 1000) / ((serviceVoltage || 240) * (isThreePhase ? Math.sqrt(3) : 1));
   const continuousAmps = acAmps * 1.25; // NEC continuous-load multiplier
   const requiredBreaker = nextBreakerSize(continuousAmps);
   const wire = smallestGaugeFor(continuousAmps);
