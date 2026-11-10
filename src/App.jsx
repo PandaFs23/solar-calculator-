@@ -61,6 +61,14 @@ export default function App() {
         .spin { animation: spin 1s linear infinite; }
         @media (prefers-reduced-motion: reduce) { .cell, .spin { animation: none; } }
         button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid ${C.gold}; outline-offset: 2px; }
+        /* Press feedback: subtle scale(0.96) on active transforms. Buttons that
+           carry an inline transition keep theirs (inline styles win); the
+           transform still fires, so every control gets tactile feedback. The
+           transition property is GPU-composited, never the "all" shorthand.
+           Reduced-motion users get no visual press. */
+        button { -webkit-tap-highlight-color: transparent; transition: transform 100ms ease; }
+        button:active { transform: scale(.96); }
+        @media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
 
         /* Regulations panel: bottom sheet on mobile, centered modal from 900px up */
         .regs-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-end; justify-content: center; background: rgba(11,22,38,.72); }
