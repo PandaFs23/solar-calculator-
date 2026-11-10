@@ -55,6 +55,11 @@ export default function App() {
         input[type=number] { -moz-appearance: textfield; }
         input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; }
         .mono { font-family: 'IBM Plex Mono', monospace; }
+        /* Equal-width digits everywhere: dynamic kWh/$/%/kW values change width
+           as they update, which makes Stat cards and figures jitter. tabular-nums
+           is inherited, so one rule stabilises every proportional-font numeral
+           (mono surfaces are already fixed-width). */
+        .app-root { font-variant-numeric: tabular-nums; }
         @keyframes cellIn { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: scale(1); } }
         .cell { animation: cellIn .25s ease both; }
         @keyframes spin { to { transform: rotate(360deg); } }
