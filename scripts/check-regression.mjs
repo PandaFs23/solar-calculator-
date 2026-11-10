@@ -18,6 +18,17 @@ import { UTILITIES, INVERTERS } from "../src/data/utilities.js";
 import { ALL_PANEL_PRODUCTS, INVERTER_PRODUCTS, BATTERY_PRODUCTS, ALL_INVERTER_PRODUCTS } from "../src/data/products.js";
 import { toModelSystems, aggregateProduction, emptySystem } from "../src/lib/existingSystems.js";
 
+// Head-Dev: allow non-interactive CI invocation via --ci flag
+if (process.argv.includes('--ci')) {
+  // Running in CI/head-dev runner; skip TTY requirement.
+} else {
+  if (typeof process.stdin.isTTY !== 'undefined' && !process.stdin.isTTY) {
+    console.error('stdin is not a tty');
+    process.exit(1);
+  }
+}
+
+
 const panelProd = ALL_PANEL_PRODUCTS.find((p) => p.id === "q_cells_q_home_next_l_g3_420_435_w");
 const invProd   = INVERTER_PRODUCTS.find((p) => p.id === "enphase_iq8m");
 const battProd  = BATTERY_PRODUCTS.find((p) => p.id === "pw3");
