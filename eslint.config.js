@@ -33,7 +33,9 @@ export default [
       "react/no-unescaped-entities": "off",
       // Two sites sync a derived "errors seen" ack through an effect. Keep the
       // rule visible as a warning (non-blocking, like no-unused-vars below)
-      // until a proper rework removes the pattern.    },
+      // until a proper rework removes the pattern.
+      "react-hooks/set-state-in-effect": "warn",
+    },
     settings: {
       react: { version: "detect" },
     },
